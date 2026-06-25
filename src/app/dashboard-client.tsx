@@ -122,6 +122,7 @@ export default function DashboardClient({
 }: {
   initialDashboard: DashboardData;
 }) {
+  const initialContactId = initialDashboard.contacts[0]?.id || "";
   const [dashboard, setDashboard] = useState<DashboardData>(initialDashboard);
   const [policyDraft, setPolicyDraft] = useState<BotPolicy>(
     initialDashboard.policy,
@@ -129,12 +130,19 @@ export default function DashboardClient({
   const [contactForm, setContactForm] = useState<ContactForm>(emptyContactForm);
   const [youthForm, setYouthForm] = useState<YouthForm>({
     ...emptyYouthForm,
-    contactId: initialDashboard.contacts[0]?.id || "",
+    contactId: initialContactId,
   });
-  const [selectedContactId, setSelectedContactId] = useState(
-    initialDashboard.contacts[0]?.id || "",
+  const [selectedContactId, setSelectedContactId] = useState(initialContactId);
+  const [selectedYouthId, setSelectedYouthId] = useState(
+    initialDashboard.youths.find(
+      (youth) => youth.contactId === initialDashboard.contacts[0]?.id,
+    )?.id ||
+      initialDashboard.youths[0]?.id ||
+      "",
   );
-  const [timeline, setTimeline] = useState<ContactTimelineItem[]>([]);
+  const [timeline, setTimeline] = useState<ContactTimelineItem[]>(() =>
+    createDashboardTimeline(initialDashboard, initialContactId),
+  );
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({});
   const [csvText, setCsvText] = useState("");
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
@@ -169,6 +177,16 @@ export default function DashboardClient({
   const selectedYouths = dashboard.youths.filter(
     (youth) => youth.contactId === selectedContactId,
   );
+  const selectedYouth =
+    selectedYouths.find((youth) => youth.id === selectedYouthId) ||
+    selectedYouths[0];
+  const selectedYouthTimeline = selectedYouth
+    ? timeline.filter(
+        (item) =>
+          item.youthId === selectedYouth.id ||
+          (item.type === "message" && item.body.includes(selectedYouth.name)),
+      )
+    : [];
   const dueContacts = useMemo(() => {
     return dashboard.contacts.filter(
       (contact) =>
@@ -176,6 +194,22 @@ export default function DashboardClient({
         new Date(contact.nextDueAt).getTime() <= nowMs,
     );
   }, [dashboard.contacts, nowMs]);
+
+  const loadTimeline = useCallback(async (contactId: string) => {
+    const data = await fetchJson<{ timeline: ContactTimelineItem[] }>(
+      `/api/contact-timeline?contactId=${encodeURIComponent(contactId)}`,
+    );
+    setTimeline(data.timeline);
+  }, []);
+
+  function selectContact(contactId: string) {
+    setSelectedContactId(contactId);
+    const firstYouth = dashboard.youths.find(
+      (youth) => youth.contactId === contactId,
+    );
+    setSelectedYouthId(firstYouth?.id || "");
+    void loadTimeline(contactId);
+  }
 
   async function toggleBot() {
     setBusy("toggle");
@@ -206,15 +240,17 @@ export default function DashboardClient({
   async function saveContact(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy("contact");
-    await postJson("/api/contacts", {
+    const data = await postJson<{ contact: Contact }>("/api/contacts", {
       ...contactForm,
       nextDueAt: contactForm.nextDueAt
         ? new Date(contactForm.nextDueAt).toISOString()
         : new Date().toISOString(),
       warmthScore: Number(contactForm.warmthScore),
     });
+    setSelectedContactId(data.contact.id);
     setContactForm(emptyContactForm);
     await refresh();
+    await loadTimeline(data.contact.id);
     setBusy(null);
   }
 
@@ -225,6 +261,8 @@ export default function DashboardClient({
     });
     if (selectedContactId === id) {
       setSelectedContactId("");
+      setSelectedYouthId("");
+      setTimeline([]);
     }
     await refresh();
     setBusy(null);
@@ -233,15 +271,18 @@ export default function DashboardClient({
   async function saveYouth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy("youth");
-    await postJson("/api/youths", {
+    const data = await postJson<{ youth: Youth }>("/api/youths", {
       ...youthForm,
       milestones: splitLines(youthForm.milestones),
     });
+    setSelectedContactId(data.youth.contactId);
+    setSelectedYouthId(data.youth.id);
     setYouthForm({
       ...emptyYouthForm,
-      contactId: selectedContactId || dashboard.contacts[0]?.id || "",
+      contactId: data.youth.contactId || dashboard.contacts[0]?.id || "",
     });
     await refresh();
+    await loadTimeline(data.youth.contactId);
     setBusy(null);
   }
 
@@ -250,6 +291,9 @@ export default function DashboardClient({
     await fetch(`/api/youths?id=${encodeURIComponent(id)}`, {
       method: "DELETE",
     });
+    if (selectedYouthId === id) {
+      setSelectedYouthId("");
+    }
     await refresh();
     setBusy(null);
   }
@@ -314,14 +358,6 @@ export default function DashboardClient({
     setWeeklyReport(data.report);
     await refresh();
     setBusy(null);
-  }
-
-  async function loadTimeline(contactId: string) {
-    setSelectedContactId(contactId);
-    const data = await fetchJson<{ timeline: ContactTimelineItem[] }>(
-      `/api/contact-timeline?contactId=${encodeURIComponent(contactId)}`,
-    );
-    setTimeline(data.timeline);
   }
 
   async function sendCommand(event: FormEvent<HTMLFormElement>) {
@@ -422,6 +458,24 @@ export default function DashboardClient({
           <StatCard label="שיעור שליחה" value={dashboard.stats.responseRate} suffix="%" icon={<Activity className="h-5 w-5" />} tone="green" />
         </section>
 
+        <section className="mt-5">
+          <RelationshipWorkspace
+            contacts={dashboard.contacts}
+            youths={dashboard.youths}
+            selectedContact={selectedContact}
+            selectedContactId={selectedContactId}
+            selectedYouth={selectedYouth}
+            selectedYouthId={selectedYouth?.id || selectedYouthId}
+            timeline={timeline}
+            selectedYouthTimeline={selectedYouthTimeline}
+            onSelectContact={selectContact}
+            onSelectYouth={setSelectedYouthId}
+            onRefreshTimeline={() => selectedContactId && loadTimeline(selectedContactId)}
+            onEditContact={(contact) => setContactForm(contactToForm(contact))}
+            onEditYouth={(youth) => setYouthForm(youthToForm(youth))}
+          />
+        </section>
+
         <section className="mt-5 grid gap-5 xl:grid-cols-[1.2fr_1fr]">
           <ReviewQueue
             reviews={dashboard.reviews}
@@ -443,7 +497,7 @@ export default function DashboardClient({
             onSubmit={saveContact}
             onEdit={(contact) => setContactForm(contactToForm(contact))}
             onDelete={removeContact}
-            onSelect={loadTimeline}
+            onSelect={selectContact}
           />
           <YouthManager
             contacts={dashboard.contacts}
@@ -451,10 +505,12 @@ export default function DashboardClient({
             form={youthForm}
             busy={busy}
             selectedContactId={selectedContactId}
+            selectedYouthId={selectedYouth?.id || selectedYouthId}
             onFormChange={setYouthForm}
             onSubmit={saveYouth}
             onEdit={(youth) => setYouthForm(youthToForm(youth))}
             onDelete={removeYouth}
+            onSelect={setSelectedYouthId}
           />
         </section>
 
@@ -661,6 +717,349 @@ function StatCard({
   );
 }
 
+function RelationshipWorkspace({
+  contacts,
+  youths,
+  selectedContact,
+  selectedContactId,
+  selectedYouth,
+  selectedYouthId,
+  timeline,
+  selectedYouthTimeline,
+  onSelectContact,
+  onSelectYouth,
+  onRefreshTimeline,
+  onEditContact,
+  onEditYouth,
+}: {
+  contacts: Contact[];
+  youths: Youth[];
+  selectedContact?: Contact;
+  selectedContactId: string;
+  selectedYouth?: Youth;
+  selectedYouthId: string;
+  timeline: ContactTimelineItem[];
+  selectedYouthTimeline: ContactTimelineItem[];
+  onSelectContact: (id: string) => void;
+  onSelectYouth: (id: string) => void;
+  onRefreshTimeline: () => void;
+  onEditContact: (contact: Contact) => void;
+  onEditYouth: (youth: Youth) => void;
+}) {
+  const youthCountByContact = youths.reduce<Record<string, number>>(
+    (counts, youth) => {
+      counts[youth.contactId] = (counts[youth.contactId] || 0) + 1;
+      return counts;
+    },
+    {},
+  );
+  const selectedContactYouths = selectedContact
+    ? youths.filter((youth) => youth.contactId === selectedContact.id)
+    : [];
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <PanelEyebrow icon={<Users className="h-4 w-4" />}>
+            מרכז ניהול קשרים
+          </PanelEyebrow>
+          <p className="mt-2 text-sm leading-6 text-[#686158]">
+            כניסה מהירה לאיש קשר, לנערים שלו, ולכל העדכונים שנרשמו במערכת.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Badge>{contacts.length} אנשי קשר</Badge>
+          <Badge tone="amber">{youths.length} נערים</Badge>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-[0.82fr_1.1fr_1fr]">
+        <div className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm font-bold">
+              <Phone className="h-4 w-4 text-[#174c3b]" />
+              אנשי קשר
+            </div>
+            <span className="text-xs font-bold text-[#6f675e]">
+              {contacts.length}
+            </span>
+          </div>
+          <div className="mt-3 grid max-h-[28rem] gap-2 overflow-y-auto pr-1">
+            {contacts.length === 0 ? (
+              <EmptyState text="אין עדיין אנשי קשר." />
+            ) : (
+              contacts.map((contact) => {
+                const youthCount = youthCountByContact[contact.id] || 0;
+                return (
+                  <button
+                    key={contact.id}
+                    type="button"
+                    onClick={() => onSelectContact(contact.id)}
+                    className={`rounded-lg border p-3 text-right transition ${
+                      selectedContactId === contact.id
+                        ? "border-[#1f7a5a] bg-[#eef8f2] shadow-sm"
+                        : "border-[#e5ded2] bg-white hover:border-[#cfc3b1]"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold">{contact.name}</span>
+                      <Badge tone={youthCount ? "amber" : "neutral"}>
+                        {youthCount} נערים
+                      </Badge>
+                    </div>
+                    <div className="mt-1 text-xs leading-5 text-[#686158]">
+                      {contact.phone} · {statusLabels[contact.status]}
+                    </div>
+                    <div className="mt-2 text-xs text-[#7b7368]">
+                      קשר אחרון: {formatDateTime(contact.lastContactedAt)}
+                    </div>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-[#d8e5dc] bg-[#f8fcfa] p-4">
+          {selectedContact ? (
+            <>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-xl font-bold">{selectedContact.name}</h3>
+                    <Badge
+                      tone={
+                        selectedContact.status === "needs_attention"
+                          ? "rose"
+                          : "neutral"
+                      }
+                    >
+                      {statusLabels[selectedContact.status]}
+                    </Badge>
+                  </div>
+                  <div className="mt-1 text-sm text-[#686158]">
+                    {selectedContact.phone} · {selectedContact.country || "ללא מדינה"} ·{" "}
+                    {selectedContact.timezone}
+                  </div>
+                </div>
+                <IconButton title="ערוך איש קשר" onClick={() => onEditContact(selectedContact)}>
+                  <Edit3 className="h-4 w-4" />
+                  ערוך
+                </IconButton>
+              </div>
+
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                <Mini label="נערים במעקב" value={String(selectedContactYouths.length)} />
+                <Mini label="נכנס למערכת" value={formatDateTime(selectedContact.createdAt)} />
+                <Mini label="קשר אחרון" value={formatDateTime(selectedContact.lastContactedAt)} />
+                <Mini label="מעקב הבא" value={formatDateTime(selectedContact.nextDueAt)} />
+              </div>
+
+              <div className="mt-4 rounded-lg border border-[#d8e5dc] bg-white p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-[#6f675e]">חום קשר</span>
+                  <span className="text-sm font-bold">{selectedContact.warmthScore}%</span>
+                </div>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#e5ded2]">
+                  <div
+                    className="h-full rounded-full bg-[#1f7a5a]"
+                    style={{ width: `${selectedContact.warmthScore}%` }}
+                  />
+                </div>
+                {selectedContact.notes ? (
+                  <p className="mt-3 text-sm leading-6 text-[#4e4841]">
+                    {selectedContact.notes}
+                  </p>
+                ) : null}
+              </div>
+
+              <div className="mt-4">
+                <div className="mb-2 flex items-center gap-2 text-sm font-bold">
+                  <Users className="h-4 w-4 text-[#203864]" />
+                  נערים של איש הקשר
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {selectedContactYouths.length === 0 ? (
+                    <EmptyState text="אין נערים משויכים לאיש הקשר הזה." />
+                  ) : (
+                    selectedContactYouths.map((youth) => (
+                      <button
+                        key={youth.id}
+                        type="button"
+                        onClick={() => onSelectYouth(youth.id)}
+                        className={`rounded-lg border p-3 text-right transition ${
+                          selectedYouthId === youth.id
+                            ? "border-[#203864] bg-[#eef3fb]"
+                            : "border-[#e5ded2] bg-white hover:border-[#cfc3b1]"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold">{youth.name}</span>
+                          <Badge>{stageLabels[youth.stage]}</Badge>
+                        </div>
+                        <div className="mt-1 text-xs text-[#686158]">
+                          עודכן: {formatDateTime(youth.lastUpdateAt || youth.updatedAt)}
+                        </div>
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            </>
+          ) : (
+            <EmptyState text="בחר איש קשר כדי לפתוח את הכרטיס שלו." />
+          )}
+        </div>
+
+        <div className="rounded-lg border border-[#d8d4e8] bg-[#f8f7fd] p-4">
+          {selectedYouth ? (
+            <>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-xl font-bold">{selectedYouth.name}</h3>
+                    <Badge tone="amber">{stageLabels[selectedYouth.stage]}</Badge>
+                  </div>
+                  <div className="mt-1 text-sm text-[#686158]">
+                    {selectedYouth.city || "ללא עיר"}
+                  </div>
+                </div>
+                <IconButton title="ערוך נער" onClick={() => onEditYouth(selectedYouth)}>
+                  <Edit3 className="h-4 w-4" />
+                  ערוך
+                </IconButton>
+              </div>
+
+              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                <Mini label="נכנס למערכת" value={formatDateTime(selectedYouth.createdAt)} />
+                <Mini
+                  label="עודכן לאחרונה"
+                  value={formatDateTime(selectedYouth.lastUpdateAt || selectedYouth.updatedAt)}
+                />
+                <Mini label="שלב" value={stageLabels[selectedYouth.stage]} />
+                <Mini label="פעולה הבאה" value={selectedYouth.nextAction || "לא הוגדרה"} />
+              </div>
+
+              <div className="mt-4 rounded-lg border border-[#ddd8ef] bg-white p-3">
+                <div className="text-xs font-bold text-[#6f675e]">אבני דרך</div>
+                {selectedYouth.milestones.length ? (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {selectedYouth.milestones.map((milestone) => (
+                      <Badge key={milestone}>{milestone}</Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-[#686158]">אין עדיין אבני דרך.</p>
+                )}
+              </div>
+
+              <div className="mt-4">
+                <div className="mb-2 flex items-center gap-2 text-sm font-bold">
+                  <FileText className="h-4 w-4 text-[#203864]" />
+                  עדכונים על הנער
+                </div>
+                <TimelineList
+                  items={selectedYouthTimeline}
+                  emptyText="אין עדיין עדכונים ייעודיים לנער הזה."
+                  compact
+                />
+              </div>
+            </>
+          ) : (
+            <EmptyState text="בחר נער כדי לראות מתי נכנס ומה עודכן עליו." />
+          )}
+        </div>
+      </div>
+
+      <div className="mt-4 border-t border-[#e5ded2] pt-4">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-bold">
+            <Activity className="h-4 w-4 text-[#174c3b]" />
+            ציר פעילות של איש הקשר
+          </div>
+          <IconButton title="רענן ציר פעילות" onClick={onRefreshTimeline}>
+            <RefreshCw className="h-4 w-4" />
+            רענן
+          </IconButton>
+        </div>
+        <TimelineList
+          items={timeline.slice(0, 12)}
+          emptyText="אין עדיין פעילות לאיש הקשר הזה."
+        />
+      </div>
+    </Panel>
+  );
+}
+
+function TimelineList({
+  items,
+  emptyText,
+  compact,
+}: {
+  items: ContactTimelineItem[];
+  emptyText: string;
+  compact?: boolean;
+}) {
+  if (items.length === 0) {
+    return <EmptyState text={emptyText} />;
+  }
+
+  return (
+    <div className={compact ? "grid gap-2" : "grid gap-3 md:grid-cols-2"}>
+      {items.map((item) => (
+        <div
+          key={`${item.type}-${item.id}`}
+          className="rounded-lg border border-[#e5ded2] bg-white p-3"
+        >
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#eef3fb] text-[#203864]">
+              <TimelineIcon type={item.type} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="font-bold">{item.title}</div>
+                <div className="text-xs text-[#686158]">
+                  {formatDateTime(item.createdAt)}
+                </div>
+              </div>
+              {item.youthName ? (
+                <div className="mt-1">
+                  <Badge>{item.youthName}</Badge>
+                </div>
+              ) : null}
+              <p className="mt-2 whitespace-pre-line text-sm leading-6 text-[#4e4841]">
+                {item.body}
+              </p>
+              {item.status ? (
+                <div className="mt-2 text-xs font-bold text-[#7b7368]">
+                  {item.status}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TimelineIcon({ type }: { type: ContactTimelineItem["type"] }) {
+  if (type === "message") {
+    return <MessageCircle className="h-4 w-4" />;
+  }
+  if (type === "review") {
+    return <ClipboardCheck className="h-4 w-4" />;
+  }
+  if (type === "alert") {
+    return <BellRing className="h-4 w-4" />;
+  }
+  if (type === "contact_update") {
+    return <UserCheck className="h-4 w-4" />;
+  }
+  return <Users className="h-4 w-4" />;
+}
+
 function ReviewQueue({
   reviews,
   busy,
@@ -847,12 +1246,26 @@ function YouthManager(props: {
   form: YouthForm;
   busy: string | null;
   selectedContactId: string;
+  selectedYouthId: string;
   onFormChange: (form: YouthForm) => void;
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onEdit: (youth: Youth) => void;
   onDelete: (id: string) => void;
+  onSelect: (id: string) => void;
 }) {
-  const { contacts, youths, form, busy, selectedContactId, onFormChange, onSubmit, onEdit, onDelete } = props;
+  const {
+    contacts,
+    youths,
+    form,
+    busy,
+    selectedContactId,
+    selectedYouthId,
+    onFormChange,
+    onSubmit,
+    onEdit,
+    onDelete,
+    onSelect,
+  } = props;
   const shown = selectedContactId ? youths.filter((youth) => youth.contactId === selectedContactId) : youths;
   return (
     <Panel>
@@ -876,12 +1289,19 @@ function YouthManager(props: {
       </form>
       <div className="mt-4 grid gap-2">
         {shown.map((youth) => (
-          <div key={youth.id} className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-3">
+          <div
+            key={youth.id}
+            className={`rounded-lg border p-3 ${
+              selectedYouthId === youth.id
+                ? "border-[#203864] bg-[#eef3fb]"
+                : "border-[#e5ded2] bg-[#fbfaf7]"
+            }`}
+          >
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div>
+              <button type="button" onClick={() => onSelect(youth.id)} className="text-right">
                 <div className="font-bold">{youth.name}</div>
                 <div className="mt-1 text-xs text-[#686158]">{youth.city} · {stageLabels[youth.stage]}</div>
-              </div>
+              </button>
               <div className="flex gap-2">
                 <button type="button" onClick={() => onEdit(youth)} className="rounded-md border border-[#d8d0c4] bg-white p-2">
                   <Edit3 className="h-4 w-4" />
@@ -1356,6 +1776,104 @@ function Mini({ label, value }: { label: string; value: string }) {
       <div className="mt-1 text-sm">{value}</div>
     </div>
   );
+}
+
+function createDashboardTimeline(
+  dashboard: DashboardData,
+  contactId: string,
+): ContactTimelineItem[] {
+  if (!contactId) {
+    return [];
+  }
+
+  const contact = dashboard.contacts.find((item) => item.id === contactId);
+  const youths = dashboard.youths.filter((youth) => youth.contactId === contactId);
+  const contactItems: ContactTimelineItem[] = contact
+    ? [
+        {
+          id: `contact-${contact.id}-created`,
+          type: "contact_update",
+          title: "איש קשר נכנס למערכת",
+          body: contact.notes || "נפתח כרטיס איש קשר למעקב.",
+          createdAt: contact.createdAt || contact.updatedAt || contact.nextDueAt,
+          status: contact.status,
+        },
+      ]
+    : [];
+
+  return [
+    ...contactItems,
+    ...dashboard.messages
+      .filter((message) => message.contactId === contactId)
+      .map((message) => ({
+        id: message.id,
+        type: "message" as const,
+        title: message.direction === "inbound" ? "הודעה נכנסת" : "הודעה יוצאת",
+        body: message.aiSummary || message.body,
+        createdAt: message.createdAt,
+        status: message.direction,
+      })),
+    ...dashboard.reviews
+      .filter((review) => review.contactId === contactId)
+      .map((review) => ({
+        id: review.id,
+        type: "review" as const,
+        title: "פריט ביקורת",
+        body: review.draftMessage,
+        createdAt: review.createdAt,
+        status: review.status,
+        youthId: review.youthId || null,
+        youthName: review.youthName || null,
+      })),
+    ...dashboard.alerts
+      .filter((alert) => alert.contactId === contactId)
+      .map((alert) => ({
+        id: alert.id,
+        type: "alert" as const,
+        title: "התראת מענה אישי",
+        body: alert.incomingText,
+        createdAt: alert.createdAt,
+        status: alert.status,
+      })),
+    ...youths.map((youth) => ({
+      id: `youth-${youth.id}-updated`,
+      type: "youth_update" as const,
+      title: `עדכון נער: ${youth.name}`,
+      body: [
+        `שלב: ${stageLabels[youth.stage]}`,
+        youth.nextAction ? `פעולה הבאה: ${youth.nextAction}` : "",
+        youth.milestones.length
+          ? `אבני דרך: ${youth.milestones.join(", ")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      createdAt:
+        youth.lastUpdateAt ||
+        youth.updatedAt ||
+        youth.createdAt ||
+        new Date().toISOString(),
+      status: youth.stage,
+      youthId: youth.id,
+      youthName: youth.name,
+    })),
+  ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) {
+    return "לא ידוע";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "לא ידוע";
+  }
+
+  return new Intl.DateTimeFormat("he-IL", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(date);
 }
 
 function EmptyState({ text }: { text: string }) {

@@ -50,6 +50,8 @@ export type Contact = {
   nextDueAt: string;
   notes: string;
   warmthScore: number;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type YouthStage =
@@ -68,6 +70,8 @@ export type Youth = {
   milestones: string[];
   lastUpdateAt: string | null;
   nextAction: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type MessageDirection = "inbound" | "outbound";
@@ -158,11 +162,13 @@ export type DashboardData = {
 
 export type ContactTimelineItem = {
   id: string;
-  type: "message" | "review" | "alert" | "youth_update";
+  type: "message" | "review" | "alert" | "youth_update" | "contact_update";
   title: string;
   body: string;
   createdAt: string;
   status?: string;
+  youthId?: string | null;
+  youthName?: string | null;
 };
 
 export type SearchResult = {

@@ -14,6 +14,7 @@ import type {
   BotSettings,
   BotPolicy,
   Contact,
+  ContactTimelineItem,
   ConversationMessage,
   DashboardData,
   DashboardStats,
@@ -91,6 +92,33 @@ function memoryStore() {
     bestContactTime: contact.bestContactTime || "12:00",
     allowAutoSend: contact.allowAutoSend ?? false,
   }));
+
+  store.contacts = store.contacts.map((contact) => {
+    const fallbackDate =
+      contact.updatedAt ||
+      contact.lastContactedAt ||
+      contact.nextDueAt ||
+      new Date().toISOString();
+
+    return {
+      ...contact,
+      createdAt: contact.createdAt || fallbackDate,
+      updatedAt: contact.updatedAt || fallbackDate,
+    };
+  });
+  store.youths = store.youths.map((youth) => {
+    const fallbackDate =
+      youth.updatedAt ||
+      youth.lastUpdateAt ||
+      youth.createdAt ||
+      new Date().toISOString();
+
+    return {
+      ...youth,
+      createdAt: youth.createdAt || fallbackDate,
+      updatedAt: youth.updatedAt || fallbackDate,
+    };
+  });
 
   return globalWithStore[storeKey];
 }
@@ -670,6 +698,7 @@ export async function upsertContact(
   const memoryExisting = existing
     ? store.contacts.find((contact) => contact.id === existing.id)
     : null;
+  const updatedAt = new Date().toISOString();
   const contact: Contact = {
     id: existing?.id || input.id || uid(),
     name: input.name,
@@ -687,6 +716,8 @@ export async function upsertContact(
     nextDueAt: input.nextDueAt || existing?.nextDueAt || new Date().toISOString(),
     notes: input.notes || existing?.notes || "",
     warmthScore: input.warmthScore ?? existing?.warmthScore ?? 50,
+    createdAt: existing?.createdAt || updatedAt,
+    updatedAt,
   };
 
   if (memoryExisting) {
@@ -713,7 +744,7 @@ export async function upsertContact(
       next_due_at: contact.nextDueAt,
       notes: contact.notes,
       warmth_score: contact.warmthScore,
-      updated_at: new Date().toISOString(),
+      updated_at: updatedAt,
     });
     throwIfSupabaseError(error);
   }
@@ -778,6 +809,7 @@ export async function upsertYouth(
   const memoryExisting = existing
     ? store.youths.find((youth) => youth.id === existing.id)
     : null;
+  const updatedAt = new Date().toISOString();
   const youth: Youth = {
     id: existing?.id || input.id || uid(),
     contactId: input.contactId,
@@ -787,6 +819,8 @@ export async function upsertYouth(
     milestones: input.milestones || existing?.milestones || [],
     lastUpdateAt: input.lastUpdateAt ?? existing?.lastUpdateAt ?? null,
     nextAction: input.nextAction || existing?.nextAction || "",
+    createdAt: existing?.createdAt || updatedAt,
+    updatedAt,
   };
 
   if (memoryExisting) {
@@ -806,7 +840,7 @@ export async function upsertYouth(
       milestones: youth.milestones,
       last_update_at: youth.lastUpdateAt,
       next_action: youth.nextAction,
-      updated_at: new Date().toISOString(),
+      updated_at: updatedAt,
     });
     throwIfSupabaseError(error);
   }
@@ -1015,6 +1049,176 @@ export async function getContactTimeline(contactId: string) {
         createdAt: alert.createdAt,
         status: alert.status,
       })),
+  ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function getContactManagementTimeline(
+  contactId: string,
+): Promise<ContactTimelineItem[]> {
+  const supabase = getSupabaseAdmin();
+
+  if (supabase) {
+    const [
+      contactResult,
+      youthsResult,
+      messagesResult,
+      reviewsResult,
+      alertsResult,
+    ] = await Promise.all([
+      supabase.from("contacts").select("*").eq("id", contactId).maybeSingle(),
+      supabase
+        .from("youths")
+        .select("*")
+        .eq("contact_id", contactId)
+        .order("updated_at", { ascending: false }),
+      supabase
+        .from("conversation_messages")
+        .select("*")
+        .eq("contact_id", contactId)
+        .order("created_at", { ascending: false })
+        .limit(100),
+      supabase
+        .from("review_items")
+        .select("*")
+        .eq("contact_id", contactId)
+        .order("created_at", { ascending: false })
+        .limit(100),
+      supabase
+        .from("owner_alerts")
+        .select("*")
+        .eq("contact_id", contactId)
+        .order("created_at", { ascending: false })
+        .limit(100),
+    ]);
+
+    const error =
+      contactResult.error ||
+      youthsResult.error ||
+      messagesResult.error ||
+      reviewsResult.error ||
+      alertsResult.error;
+    throwIfSupabaseError(error);
+
+    const contact = contactResult.data ? mapContact(contactResult.data) : undefined;
+    const youths = (youthsResult.data || []).map(mapYouth);
+    const messages = (messagesResult.data || []).map(mapMessage);
+    const reviews = (reviewsResult.data || []).map((review) =>
+      mapReview(review, contact ? [contact] : [], youths),
+    );
+    const alerts = (alertsResult.data || []).map((alert) =>
+      mapOwnerAlert(alert, contact ? [contact] : []),
+    );
+
+    return buildContactManagementTimeline({
+      contact,
+      youths,
+      messages,
+      reviews,
+      alerts,
+    });
+  }
+
+  const dashboard = await getDashboardData();
+  const contact = dashboard.contacts.find((item) => item.id === contactId);
+  const youths = dashboard.youths.filter((youth) => youth.contactId === contactId);
+  const messages = dashboard.messages.filter(
+    (message) => message.contactId === contactId,
+  );
+  const reviews = dashboard.reviews.filter(
+    (review) => review.contactId === contactId,
+  );
+  const alerts = dashboard.alerts.filter((alert) => alert.contactId === contactId);
+
+  return buildContactManagementTimeline({
+    contact,
+    youths,
+    messages,
+    reviews,
+    alerts,
+  });
+}
+
+function buildContactManagementTimeline({
+  contact,
+  youths,
+  messages,
+  reviews,
+  alerts,
+}: {
+  contact?: Contact;
+  youths: Youth[];
+  messages: ConversationMessage[];
+  reviews: ReviewItem[];
+  alerts: OwnerAlert[];
+}): ContactTimelineItem[] {
+  const contactItems: ContactTimelineItem[] = contact
+    ? [
+        {
+          id: `contact-${contact.id}-created`,
+          type: "contact_update",
+          title: "איש קשר נכנס למערכת",
+          body: contact.notes || "נפתח כרטיס איש קשר למעקב.",
+          createdAt: contact.createdAt || contact.updatedAt || new Date().toISOString(),
+          status: contact.status,
+        },
+      ]
+    : [];
+
+  return [
+    ...contactItems,
+    ...messages.map((message) => ({
+      id: message.id,
+      type: "message" as const,
+      title:
+        message.direction === "inbound"
+          ? "הודעה נכנסת"
+          : message.channel === "system"
+            ? "עדכון מערכת"
+            : "הודעה יוצאת",
+      body: message.aiSummary || message.body,
+      createdAt: message.createdAt,
+      status: message.direction,
+    })),
+    ...reviews.map((review) => ({
+      id: review.id,
+      type: "review" as const,
+      title: "פריט ביקורת",
+      body: review.draftMessage,
+      createdAt: review.createdAt,
+      status: review.status,
+      youthId: review.youthId || null,
+      youthName: review.youthName || null,
+    })),
+    ...alerts.map((alert) => ({
+      id: alert.id,
+      type: "alert" as const,
+      title: "התראת מענה אישי",
+      body: alert.incomingText,
+      createdAt: alert.createdAt,
+      status: alert.status,
+    })),
+    ...youths.map((youth) => ({
+      id: `youth-${youth.id}-updated`,
+      type: "youth_update" as const,
+      title: `עדכון נער: ${youth.name}`,
+      body: [
+        `שלב: ${youth.stage}`,
+        youth.nextAction ? `פעולה הבאה: ${youth.nextAction}` : "",
+        youth.milestones.length
+          ? `אבני דרך: ${youth.milestones.join(", ")}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      createdAt:
+        youth.lastUpdateAt ||
+        youth.updatedAt ||
+        youth.createdAt ||
+        new Date().toISOString(),
+      status: youth.stage,
+      youthId: youth.id,
+      youthName: youth.name,
+    })),
   ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
@@ -1238,6 +1442,8 @@ function mapContact(row: Record<string, unknown>): Contact {
     nextDueAt: String(row.next_due_at || new Date().toISOString()),
     notes: String(row.notes || ""),
     warmthScore: Number(row.warmth_score || 50),
+    createdAt: String(row.created_at || new Date().toISOString()),
+    updatedAt: String(row.updated_at || row.created_at || new Date().toISOString()),
   };
 }
 
@@ -1253,6 +1459,8 @@ function mapYouth(row: Record<string, unknown>): Youth {
       : [],
     lastUpdateAt: row.last_update_at ? String(row.last_update_at) : null,
     nextAction: String(row.next_action || ""),
+    createdAt: String(row.created_at || new Date().toISOString()),
+    updatedAt: String(row.updated_at || row.last_update_at || new Date().toISOString()),
   };
 }
 
