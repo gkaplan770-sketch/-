@@ -143,6 +143,11 @@ export async function approveAndSendReview(id: string) {
     throw new Error("Contact not found");
   }
 
+  const schedule = canContactNow(contact, dashboard.settings, dashboard.policy);
+  if (!schedule.allowed) {
+    throw new Error(`Message blocked by schedule policy: ${schedule.reason}`);
+  }
+
   const sent = await sendWhatsappMessage({
     to: contact.phone,
     text: review.draftMessage,
@@ -417,6 +422,18 @@ export async function sendOwnerReportToWhatsapp() {
     latestReport?.body ||
     `יש ${pending} פריטי ביקורת פתוחים, ${alerts} התראות מענה אישי ו-${dashboard.youths.length} נערים במעקב.`;
 
+  const ownerSchedule = canContactNow(
+    ownerContact(dashboard.settings),
+    dashboard.settings,
+    dashboard.policy,
+  );
+  if (!ownerSchedule.allowed) {
+    await addSystemMessage(
+      `דוח מנהל לא נשלח בוואטסאפ כי ${ownerSchedule.reason}`,
+    );
+    return body;
+  }
+
   await sendWhatsappMessage({
     to: dashboard.settings.ownerWhatsapp,
     text: body,
@@ -536,14 +553,25 @@ async function escalateToOwner(input: {
   );
 
   if (input.policy.notifyOwnerOnEscalation && input.settings.ownerWhatsapp) {
-    await sendWhatsappMessage({
-      to: input.settings.ownerWhatsapp,
-      text: renderOwnerAlert(input.policy.ownerAlertTemplate, {
-        contactName,
-        reason: input.reason,
-        message: incomingText,
-      }),
-    });
+    const ownerSchedule = canContactNow(
+      ownerContact(input.settings),
+      input.settings,
+      input.policy,
+    );
+    if (ownerSchedule.allowed) {
+      await sendWhatsappMessage({
+        to: input.settings.ownerWhatsapp,
+        text: renderOwnerAlert(input.policy.ownerAlertTemplate, {
+          contactName,
+          reason: input.reason,
+          message: incomingText,
+        }),
+      });
+    } else {
+      await addSystemMessage(
+        `לא נשלחה התראת מנהל בוואטסאפ כי ${ownerSchedule.reason}`,
+      );
+    }
   }
 
   await addSystemMessage(`נפתחה התראת מענה אישי עבור ${contactName}.`);
@@ -568,7 +596,9 @@ async function queueOrSendReply(input: {
     return null;
   }
 
-  if (shouldSendDirectly) {
+  const schedule = canContactNow(input.contact, input.settings, input.policy);
+
+  if (shouldSendDirectly && schedule.allowed) {
     const sent = await sendWhatsappMessage({
       to: input.contact.phone,
       text: input.body,
@@ -590,7 +620,9 @@ async function queueOrSendReply(input: {
     youthName: input.youthName || null,
     priority: input.priority,
     draftMessage: input.body,
-    aiReason: input.reason,
+    aiReason: schedule.allowed
+      ? input.reason
+      : `${input.reason} לא נשלח אוטומטית כי ${schedule.reason}`,
     scheduledFor: new Date().toISOString(),
   });
 }
@@ -682,6 +714,26 @@ function findContactByPhoneFromDashboard(dashboard: DashboardData, phone: string
   return dashboard.contacts.find(
     (contact) => normalizePhone(contact.phone) === normalized,
   );
+}
+
+function ownerContact(settings: BotSettings): Contact {
+  return {
+    id: "owner",
+    name: "מנהל",
+    phone: settings.ownerWhatsapp,
+    country: "ישראל",
+    timezone: "Asia/Jerusalem",
+    language: "he",
+    status: "active",
+    preferredTone: settings.tone,
+    responseStyle: "",
+    bestContactTime: "",
+    allowAutoSend: false,
+    lastContactedAt: null,
+    nextDueAt: new Date().toISOString(),
+    notes: "",
+    warmthScore: 100,
+  };
 }
 
 function mediaFailureAnalysis(

@@ -1,3 +1,7 @@
+import {
+  flags,
+  getHolidaysOnDate,
+} from "@hebcal/core";
 import type { BotPolicy, BotSettings, Contact } from "@/lib/types";
 
 export type ScheduleDecision = {
@@ -30,6 +34,17 @@ export function canContactNow(
       reason: "חלון שבת/ערב שבת לפי אזור הזמן של איש הקשר.",
       localTime,
     };
+  }
+
+  if (policy.avoidJewishHolidays) {
+    const holiday = blockingHoliday(local, isIsraelContact(contact));
+    if (holiday) {
+      return {
+        allowed: false,
+        reason: `${holiday} לפי הלוח היהודי וזמן מקומי של איש הקשר.`,
+        localTime,
+      };
+    }
   }
 
   if (isWithinQuietHours(localTime, settings.quietHoursStart, settings.quietHoursEnd)) {
@@ -102,6 +117,39 @@ function isWithinQuietHours(time: string, start: string, end: string) {
 function isNearPreferredTime(time: string, preferred: string) {
   const delta = Math.abs(minutes(time) - minutes(preferred));
   return delta <= 180;
+}
+
+function blockingHoliday(local: ReturnType<typeof localParts>, isIsrael: boolean) {
+  const date = new Date(
+    Number(local.year),
+    Number(local.month) - 1,
+    Number(local.day),
+    12,
+  );
+  const holidays = getHolidaysOnDate(date, isIsrael) || [];
+  const blocking = holidays.find((event) => {
+    const eventFlags = event.getFlags();
+    const isYomTov =
+      Boolean(eventFlags & flags.CHAG) ||
+      Boolean(eventFlags & flags.MAJOR_FAST) ||
+      Boolean(eventFlags & flags.CHOL_HAMOED);
+    const isErevYomTov =
+      Boolean(eventFlags & flags.EREV) && local.hourNumber >= 14;
+
+    return isYomTov || isErevYomTov;
+  });
+
+  return blocking?.render("he") || blocking?.getDesc() || "";
+}
+
+function isIsraelContact(contact: Contact) {
+  const country = contact.country.toLowerCase();
+  return (
+    contact.timezone === "Asia/Jerusalem" ||
+    contact.timezone === "Asia/Tel_Aviv" ||
+    country.includes("israel") ||
+    country.includes("ישראל")
+  );
 }
 
 function minutes(value: string) {
