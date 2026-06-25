@@ -8,7 +8,7 @@ import {
   seedSettings,
   seedYouths,
 } from "@/lib/mock-data";
-import { getSupabaseAdmin, hasSupabaseConfig } from "@/lib/supabase";
+import { getSupabaseAdmin, hasSupabaseConfig, formatSupabaseError } from "@/lib/supabase";
 import { assertRealDataStoreReady, isRealMode } from "@/lib/config";
 import type {
   BotSettings,
@@ -267,7 +267,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       alertsResult.error;
 
     if (error) {
-      throw error;
+      throwIfSupabaseError(error);
     }
 
     const settings = mapSettings(settingsResult.data);
@@ -288,10 +288,7 @@ export async function getDashboardData(): Promise<DashboardData> {
       currentHealth(),
     );
   } catch (error) {
-    const message =
-      error instanceof Error
-        ? error.message
-        : "Supabase is configured but the dashboard query failed.";
+    const message = formatSupabaseError(error);
     if (isRealMode()) {
       throw new Error(`Supabase dashboard query failed: ${message}`);
     }
@@ -1338,11 +1335,7 @@ function stringArray(value: unknown, fallback: string[]) {
 
 function throwIfSupabaseError(error: unknown) {
   if (error) {
-    const message =
-      typeof error === "object" && error && "message" in error
-        ? String((error as { message: unknown }).message)
-        : "Supabase operation failed";
-    throw new Error(message);
+    throw new Error(formatSupabaseError(error));
   }
 }
 
