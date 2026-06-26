@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAppReadyAndAuthenticated } from "@/lib/api-guard";
 import { approveAndSendReview } from "@/lib/bot-engine";
-import { updateReviewItem } from "@/lib/data-store";
+import { updateReviewItem, updateReviewSchedule } from "@/lib/data-store";
 
 const reviewActionSchema = z.object({
   id: z.string(),
-  action: z.enum(["approve", "reject", "send", "edit"]),
+  action: z.enum(["approve", "reject", "send", "edit", "schedule"]),
   draftMessage: z.string().optional(),
+  scheduledFor: z.string().optional(),
 });
 
 export async function POST(request: Request) {
@@ -25,6 +26,12 @@ export async function POST(request: Request) {
 
   if (payload.action === "reject") {
     const review = await updateReviewItem(payload.id, "rejected");
+    return NextResponse.json({ review });
+  }
+
+  if (payload.action === "schedule") {
+    const scheduledFor = payload.scheduledFor || new Date().toISOString();
+    const review = await updateReviewSchedule(payload.id, scheduledFor);
     return NextResponse.json({ review });
   }
 

@@ -47,7 +47,8 @@ export function requireCronSecret(request: Request) {
   }
 
   const expected = process.env.CRON_SECRET;
-  const actual = request.headers.get("x-cron-secret");
+  const bearer = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+  const actual = request.headers.get("x-cron-secret") || bearer;
   if (!expected || actual !== expected) {
     return NextResponse.json({ error: "Unauthorized cron request" }, { status: 401 });
   }

@@ -55,6 +55,14 @@ export function canContactNow(
     };
   }
 
+  if (!isWithinAllowedWindow(localTime, settings.sendWindowStart, settings.sendWindowEnd)) {
+    return {
+      allowed: false,
+      reason: `מחוץ לחלון השליחה שהוגדר (${settings.sendWindowStart}-${settings.sendWindowEnd}).`,
+      localTime,
+    };
+  }
+
   if (contact.bestContactTime && !isNearPreferredTime(localTime, contact.bestContactTime)) {
     return {
       allowed: false,
@@ -108,6 +116,22 @@ function isWithinQuietHours(time: string, start: string, end: string) {
   const endMinutes = minutes(end);
 
   if (startMinutes <= endMinutes) {
+    return current >= startMinutes && current <= endMinutes;
+  }
+
+  return current >= startMinutes || current <= endMinutes;
+}
+
+function isWithinAllowedWindow(time: string, start: string, end: string) {
+  const current = minutes(time);
+  const startMinutes = minutes(start);
+  const endMinutes = minutes(end);
+
+  if (startMinutes === endMinutes) {
+    return true;
+  }
+
+  if (startMinutes < endMinutes) {
     return current >= startMinutes && current <= endMinutes;
   }
 

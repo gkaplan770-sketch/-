@@ -1,14 +1,29 @@
 export type BotAutomationLevel = "drafts" | "auto_with_review" | "full_auto";
 
+export type OwnerCommandRoute = {
+  id: string;
+  label: string;
+  destination: string;
+  triggers: string[];
+  enabled: boolean;
+};
+
 export type BotSettings = {
   id: string;
   isEnabled: boolean;
   automationLevel: BotAutomationLevel;
   dailyContactLimit: number;
+  maxYouthsPerMessage: number;
+  noResponseFollowupDays: number;
+  staleYouthDays: number;
+  sendWindowStart: string;
+  sendWindowEnd: string;
+  sendIntervalMinutes: number;
   ownerWhatsapp: string;
   tone: string;
   quietHoursStart: string;
   quietHoursEnd: string;
+  ownerCommandRoutes: OwnerCommandRoute[];
   updatedAt: string;
 };
 
@@ -115,6 +130,8 @@ export type DashboardStats = {
   escalatedMessages: number;
   responseRate: number;
   staleContacts: number;
+  unresponsiveContacts: number;
+  staleYouths: number;
 };
 
 export type IntegrationHealth = {

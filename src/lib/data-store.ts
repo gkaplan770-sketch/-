@@ -8,6 +8,7 @@ import {
   seedSettings,
   seedYouths,
 } from "@/lib/mock-data";
+import { mergeOwnerCommandRoutes } from "@/lib/owner-command-routes";
 import { getSupabaseAdmin, hasSupabaseConfig, formatSupabaseError } from "@/lib/supabase";
 import { assertRealDataStoreReady, isRealMode } from "@/lib/config";
 import type {
@@ -22,6 +23,7 @@ import type {
   ImportResult,
   OwnerAlert,
   OwnerAlertStatus,
+  OwnerCommandRoute,
   OwnerReport,
   ReviewItem,
   ReviewStatus,
@@ -85,6 +87,15 @@ function memoryStore() {
   if (!store.alerts) {
     store.alerts = seedAlerts.map((alert) => ({ ...alert }));
   }
+  store.settings.maxYouthsPerMessage ||= seedSettings.maxYouthsPerMessage;
+  store.settings.noResponseFollowupDays ||= seedSettings.noResponseFollowupDays;
+  store.settings.staleYouthDays ||= seedSettings.staleYouthDays;
+  store.settings.sendWindowStart ||= seedSettings.sendWindowStart;
+  store.settings.sendWindowEnd ||= seedSettings.sendWindowEnd;
+  store.settings.sendIntervalMinutes ||= seedSettings.sendIntervalMinutes;
+  store.settings.ownerCommandRoutes = mergeOwnerCommandRoutes(
+    store.settings.ownerCommandRoutes,
+  );
   store.contacts = store.contacts.map((contact) => ({
     ...contact,
     preferredTone: contact.preferredTone || "חם, מכבד וקצר",
@@ -144,6 +155,8 @@ function calculateStats(
   youths: Youth[],
   reviews: ReviewItem[],
   alerts: OwnerAlert[],
+  messages: ConversationMessage[],
+  settings: BotSettings,
 ): DashboardStats {
   const now = new Date();
   const month = now.getMonth();
@@ -174,6 +187,12 @@ function calculateStats(
     const days = (now.getTime() - last.getTime()) / 86400000;
     return days >= 45;
   }).length;
+  const unresponsiveContacts = contacts.filter((contact) =>
+    isUnresponsiveContact(contact, messages, settings.noResponseFollowupDays, now),
+  ).length;
+  const staleYouths = youths.filter((youth) =>
+    isStaleYouth(youth, settings.staleYouthDays, now),
+  ).length;
 
   const updatedThisMonth = (youth: Youth) => {
     if (!youth.lastUpdateAt) {
@@ -202,7 +221,55 @@ function calculateStats(
     escalatedMessages,
     responseRate,
     staleContacts,
+    unresponsiveContacts,
+    staleYouths,
   };
+}
+
+function isUnresponsiveContact(
+  contact: Contact,
+  messages: ConversationMessage[],
+  waitDays: number,
+  now = new Date(),
+) {
+  if (!contact.lastContactedAt || contact.status === "paused") {
+    return false;
+  }
+
+  const lastContactedAt = new Date(contact.lastContactedAt);
+  const inboundAfterLastContact = messages.some((message) => {
+    return (
+      message.contactId === contact.id &&
+      message.direction === "inbound" &&
+      new Date(message.createdAt) > lastContactedAt
+    );
+  });
+
+  return (
+    !inboundAfterLastContact &&
+    daysBetween(lastContactedAt, now) >= waitDays
+  );
+}
+
+function isStaleYouth(youth: Youth, staleDays: number, now = new Date()) {
+  const lastUpdate = youth.lastUpdateAt || youth.updatedAt || youth.createdAt;
+  if (!lastUpdate) {
+    return true;
+  }
+
+  return daysBetween(new Date(lastUpdate), now) >= staleDays;
+}
+
+function daysBetween(earlier: Date, later: Date) {
+  return Math.floor((later.getTime() - earlier.getTime()) / 86400000);
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, Number(value) || min));
+}
+
+function normalizeTime(value: string, fallback: string) {
+  return /^\d{2}:\d{2}$/.test(value || "") ? value : fallback;
 }
 
 function dashboardFromStore(
@@ -212,7 +279,14 @@ function dashboardFromStore(
   return {
     settings: store.settings,
     policy: store.policy,
-    stats: calculateStats(store.contacts, store.youths, store.reviews, store.alerts),
+    stats: calculateStats(
+      store.contacts,
+      store.youths,
+      store.reviews,
+      store.alerts,
+      store.messages,
+      store.settings,
+    ),
     contacts: [...store.contacts].sort((a, b) =>
       a.nextDueAt.localeCompare(b.nextDueAt),
     ),
@@ -232,7 +306,7 @@ function dashboardFromStore(
     }),
     messages: [...store.messages]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 12),
+      .slice(0, 100),
     reports: [...store.reports]
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       .slice(0, 5),
@@ -271,7 +345,7 @@ export async function getDashboardData(): Promise<DashboardData> {
         .from("conversation_messages")
         .select("*")
         .order("created_at", { ascending: false })
-        .limit(12),
+        .limit(100),
       supabase
         .from("owner_reports")
         .select("*")
@@ -345,10 +419,17 @@ export async function setBotEnabled(isEnabled: boolean) {
       is_enabled: isEnabled,
       automation_level: currentSettings.automationLevel,
       daily_contact_limit: currentSettings.dailyContactLimit,
+      max_youths_per_message: currentSettings.maxYouthsPerMessage,
+      no_response_followup_days: currentSettings.noResponseFollowupDays,
+      stale_youth_days: currentSettings.staleYouthDays,
+      send_window_start: currentSettings.sendWindowStart,
+      send_window_end: currentSettings.sendWindowEnd,
+      send_interval_minutes: currentSettings.sendIntervalMinutes,
       owner_whatsapp: currentSettings.ownerWhatsapp,
       tone: currentSettings.tone,
       quiet_hours_start: currentSettings.quietHoursStart,
       quiet_hours_end: currentSettings.quietHoursEnd,
+      owner_command_routes: currentSettings.ownerCommandRoutes,
       updated_at: updatedAt,
     });
     throwIfSupabaseError(error);
@@ -359,6 +440,50 @@ export async function setBotEnabled(isEnabled: boolean) {
   );
 
   return store.settings;
+}
+
+export async function updateBotSettings(input: BotSettings) {
+  const updatedAt = new Date().toISOString();
+  const settings: BotSettings = {
+    ...input,
+    dailyContactLimit: clamp(input.dailyContactLimit, 1, 10),
+    maxYouthsPerMessage: clamp(input.maxYouthsPerMessage, 1, 10),
+    noResponseFollowupDays: clamp(input.noResponseFollowupDays, 1, 60),
+    staleYouthDays: clamp(input.staleYouthDays, 1, 365),
+    sendWindowStart: normalizeTime(input.sendWindowStart, seedSettings.sendWindowStart),
+    sendWindowEnd: normalizeTime(input.sendWindowEnd, seedSettings.sendWindowEnd),
+    sendIntervalMinutes: clamp(input.sendIntervalMinutes, 30, 240),
+    ownerCommandRoutes: mergeOwnerCommandRoutes(input.ownerCommandRoutes),
+    updatedAt,
+  };
+  const store = memoryStore();
+  store.settings = settings;
+
+  const supabase = getSupabaseAdmin();
+  if (supabase) {
+    const { error } = await supabase.from("bot_settings").upsert({
+      id: settings.id,
+      is_enabled: settings.isEnabled,
+      automation_level: settings.automationLevel,
+      daily_contact_limit: settings.dailyContactLimit,
+      max_youths_per_message: settings.maxYouthsPerMessage,
+      no_response_followup_days: settings.noResponseFollowupDays,
+      stale_youth_days: settings.staleYouthDays,
+      send_window_start: settings.sendWindowStart,
+      send_window_end: settings.sendWindowEnd,
+      send_interval_minutes: settings.sendIntervalMinutes,
+      owner_whatsapp: settings.ownerWhatsapp,
+      tone: settings.tone,
+      quiet_hours_start: settings.quietHoursStart,
+      quiet_hours_end: settings.quietHoursEnd,
+      owner_command_routes: settings.ownerCommandRoutes,
+      updated_at: updatedAt,
+    });
+    throwIfSupabaseError(error);
+  }
+
+  await addSystemMessage("הגדרות המנהל עודכנו.");
+  return settings;
 }
 
 export async function updateBotPolicy(input: BotPolicy) {
@@ -437,6 +562,38 @@ export async function updateReviewItem(
   }
 
   await addSystemMessage(`פריט ביקורת ${review.contactName} עודכן ל-${status}.`);
+  return review;
+}
+
+export async function updateReviewSchedule(id: string, scheduledFor: string) {
+  const dashboard = await getDashboardData();
+  const existingReview = dashboard.reviews.find((item) => item.id === id);
+  if (!existingReview) {
+    throw new Error("Review item not found");
+  }
+
+  const store = memoryStore();
+  const memoryReview = store.reviews.find((item) => item.id === id);
+  const review = {
+    ...existingReview,
+    scheduledFor,
+  };
+
+  if (memoryReview) {
+    Object.assign(memoryReview, review);
+  }
+
+  const supabase = getSupabaseAdmin();
+  if (supabase) {
+    const { error } = await supabase
+      .from("review_items")
+      .update({
+        scheduled_for: scheduledFor,
+      })
+      .eq("id", id);
+    throwIfSupabaseError(error);
+  }
+
   return review;
 }
 
@@ -1348,7 +1505,10 @@ export function getMemorySnapshot() {
 
 function mapSettings(row: Record<string, unknown> | null): BotSettings {
   if (!row) {
-    return seedSettings;
+    return {
+      ...seedSettings,
+      ownerCommandRoutes: mergeOwnerCommandRoutes(seedSettings.ownerCommandRoutes),
+    };
   }
 
   return {
@@ -1358,12 +1518,54 @@ function mapSettings(row: Record<string, unknown> | null): BotSettings {
       (row.automation_level as BotSettings["automationLevel"]) ||
       "auto_with_review",
     dailyContactLimit: Number(row.daily_contact_limit || 2),
+    maxYouthsPerMessage: Number(row.max_youths_per_message || 2),
+    noResponseFollowupDays: Number(row.no_response_followup_days || 4),
+    staleYouthDays: Number(row.stale_youth_days || 30),
+    sendWindowStart: String(row.send_window_start || seedSettings.sendWindowStart),
+    sendWindowEnd: String(row.send_window_end || seedSettings.sendWindowEnd),
+    sendIntervalMinutes: Number(
+      row.send_interval_minutes || seedSettings.sendIntervalMinutes,
+    ),
     ownerWhatsapp: String(row.owner_whatsapp || ""),
     tone: String(row.tone || seedSettings.tone),
     quietHoursStart: String(row.quiet_hours_start || "21:30"),
     quietHoursEnd: String(row.quiet_hours_end || "09:00"),
+    ownerCommandRoutes: mergeOwnerCommandRoutes(
+      ownerCommandRoutesFromRow(row.owner_command_routes),
+    ),
     updatedAt: String(row.updated_at || new Date().toISOString()),
   };
+}
+
+function ownerCommandRoutesFromRow(value: unknown): OwnerCommandRoute[] {
+  let parsed = value;
+
+  if (typeof value === "string") {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  return parsed
+    .map((route) => {
+      const data = route as Partial<OwnerCommandRoute>;
+      return {
+        id: String(data.id || ""),
+        label: String(data.label || ""),
+        destination: String(data.destination || ""),
+        triggers: Array.isArray(data.triggers)
+          ? data.triggers.map((trigger) => String(trigger))
+          : [],
+        enabled: data.enabled !== false,
+      };
+    })
+    .filter((route) => route.id);
 }
 
 function mapPolicy(row: Record<string, unknown> | null): BotPolicy {

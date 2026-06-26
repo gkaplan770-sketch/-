@@ -38,18 +38,21 @@ import { useCallback, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import type {
   BotPolicy,
+  BotSettings,
   Contact,
   ContactTimelineItem,
   DashboardData,
   ImportResult,
   IntegrationHealth,
   OwnerAlert,
+  OwnerCommandRoute,
   ReviewItem,
   SearchResult,
   SimulationResult,
   WeeklyReport,
   Youth,
 } from "@/lib/types";
+import { mergeOwnerCommandRoutes } from "@/lib/owner-command-routes";
 
 type ContactForm = {
   id?: string;
@@ -124,6 +127,9 @@ export default function DashboardClient({
 }) {
   const initialContactId = initialDashboard.contacts[0]?.id || "";
   const [dashboard, setDashboard] = useState<DashboardData>(initialDashboard);
+  const [settingsDraft, setSettingsDraft] = useState<BotSettings>(
+    initialDashboard.settings,
+  );
   const [policyDraft, setPolicyDraft] = useState<BotPolicy>(
     initialDashboard.policy,
   );
@@ -166,6 +172,7 @@ export default function DashboardClient({
     setLoading(true);
     const data = await fetchJson<DashboardData>("/api/dashboard");
     setDashboard(data);
+    setSettingsDraft(data.settings);
     setPolicyDraft(data.policy);
     setNowMs(Date.now());
     setLoading(false);
@@ -194,6 +201,41 @@ export default function DashboardClient({
         new Date(contact.nextDueAt).getTime() <= nowMs,
     );
   }, [dashboard.contacts, nowMs]);
+  const unresponsiveContacts = useMemo(
+    () =>
+      dashboard.contacts
+        .filter((contact) =>
+          isContactUnresponsive(
+            contact,
+            dashboard.messages,
+            dashboard.settings.noResponseFollowupDays,
+            nowMs,
+          ),
+        )
+        .sort(
+          (a, b) =>
+            new Date(a.lastContactedAt || 0).getTime() -
+            new Date(b.lastContactedAt || 0).getTime(),
+        ),
+    [
+      dashboard.contacts,
+      dashboard.messages,
+      dashboard.settings.noResponseFollowupDays,
+      nowMs,
+    ],
+  );
+  const staleYouths = useMemo(
+    () =>
+      dashboard.youths
+        .filter((youth) =>
+          isYouthStale(youth, dashboard.settings.staleYouthDays, nowMs),
+        )
+        .sort(
+          (a, b) =>
+            lastYouthUpdateMs(a) - lastYouthUpdateMs(b),
+        ),
+    [dashboard.youths, dashboard.settings.staleYouthDays, nowMs],
+  );
 
   const loadTimeline = useCallback(async (contactId: string) => {
     const data = await fetchJson<{ timeline: ContactTimelineItem[] }>(
@@ -232,6 +274,20 @@ export default function DashboardClient({
     await postJson("/api/policy", {
       ...policyDraft,
       maxAutoReplyLength: Number(policyDraft.maxAutoReplyLength),
+    });
+    await refresh();
+    setBusy(null);
+  }
+
+  async function saveSettings() {
+    setBusy("settings");
+    await postJson("/api/settings", {
+      ...settingsDraft,
+      dailyContactLimit: Number(settingsDraft.dailyContactLimit),
+      maxYouthsPerMessage: Number(settingsDraft.maxYouthsPerMessage),
+      noResponseFollowupDays: Number(settingsDraft.noResponseFollowupDays),
+      staleYouthDays: Number(settingsDraft.staleYouthDays),
+      sendIntervalMinutes: Number(settingsDraft.sendIntervalMinutes),
     });
     await refresh();
     setBusy(null);
@@ -298,12 +354,17 @@ export default function DashboardClient({
     setBusy(null);
   }
 
-  async function reviewAction(id: string, action: "send" | "reject" | "edit") {
+  async function reviewAction(
+    id: string,
+    action: "send" | "reject" | "edit" | "schedule",
+    scheduledFor?: string,
+  ) {
     setBusy(id);
     await postJson("/api/reviews", {
       id,
       action,
       draftMessage: reviewDrafts[id],
+      scheduledFor,
     });
     await refresh();
     setBusy(null);
@@ -414,8 +475,11 @@ export default function DashboardClient({
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6">
-        <section className="grid gap-4 lg:grid-cols-[1.35fr_0.9fr]">
+      <div className="mx-auto grid max-w-7xl gap-5 px-4 py-6 sm:px-6 lg:grid-cols-[13rem_1fr]">
+        <ManagerSideNav dashboard={dashboard} />
+
+        <div className="min-w-0">
+        <section id="today" className="scroll-mt-6 grid gap-4 lg:grid-cols-[1.35fr_0.9fr]">
           <Panel>
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div>
@@ -426,7 +490,7 @@ export default function DashboardClient({
                   {dashboard.settings.isEnabled ? "פעיל עם ביקורת ומדיניות" : "כבוי"}
                 </h2>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-[#686158]">
-                  {dashboard.settings.dailyContactLimit} פניות ביום · שבת{" "}
+                  {dashboard.settings.dailyContactLimit} פניות ביום · כל {dashboard.settings.sendIntervalMinutes} דק׳ · שבת{" "}
                   {dashboard.policy.avoidShabbat ? "חסומה" : "פתוחה"} · כל תשובה{" "}
                   {dashboard.policy.requireReviewForAllReplies ? "בביקורת" : "לפי אמון"}
                 </p>
@@ -442,7 +506,7 @@ export default function DashboardClient({
             </div>
             <div className="mt-5 grid gap-3 sm:grid-cols-4">
               <ControlMetric label="מגיעים לתור" value={dueContacts.length} icon={<Users className="h-4 w-4" />} />
-              <ControlMetric label="שעת שקט" value={`${dashboard.settings.quietHoursStart}-${dashboard.settings.quietHoursEnd}`} icon={<PauseCircle className="h-4 w-4" />} />
+              <ControlMetric label="חלון שליחה" value={`${dashboard.settings.sendWindowStart}-${dashboard.settings.sendWindowEnd}`} icon={<PauseCircle className="h-4 w-4" />} />
               <ControlMetric label="תאריכים חסומים" value={dashboard.policy.blockedDates.length} icon={<Ban className="h-4 w-4" />} />
               <ControlMetric label="מענה אישי" value={dashboard.stats.openOwnerAlerts} icon={<BellRing className="h-4 w-4" />} />
             </div>
@@ -450,15 +514,51 @@ export default function DashboardClient({
           <IntegrationPanel health={dashboard.health} />
         </section>
 
-        <section className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <section className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
           <StatCard label="אנשי קשר" value={dashboard.stats.activeContacts} icon={<Phone className="h-5 w-5" />} tone="green" />
           <StatCard label="נערים" value={dashboard.stats.trackedYouths} icon={<Users className="h-5 w-5" />} tone="blue" />
           <StatCard label="ביקורות" value={dashboard.stats.pendingReviews} icon={<ClipboardCheck className="h-5 w-5" />} tone="amber" />
           <StatCard label="ישנים" value={dashboard.stats.staleContacts} icon={<AlertCircle className="h-5 w-5" />} tone="rose" />
+          <StatCard label="לא מגיבים" value={dashboard.stats.unresponsiveContacts} icon={<MessageCircle className="h-5 w-5" />} tone="rose" />
+          <StatCard label="נערים בלי עדכון" value={dashboard.stats.staleYouths} icon={<Users className="h-5 w-5" />} tone="amber" />
           <StatCard label="שיעור שליחה" value={dashboard.stats.responseRate} suffix="%" icon={<Activity className="h-5 w-5" />} tone="green" />
         </section>
 
-        <section className="mt-5">
+        <section id="command" className="mt-5 scroll-mt-6">
+          <ManagementCommandCenter
+            dashboard={dashboard}
+            dueContacts={dueContacts}
+            unresponsiveContacts={unresponsiveContacts}
+            staleYouths={staleYouths}
+            nowMs={nowMs}
+            onSelectContact={selectContact}
+            onSelectYouth={setSelectedYouthId}
+          />
+        </section>
+
+        <section id="work" className="mt-5 scroll-mt-6">
+          <ProfessionalOpsCenter
+            dashboard={dashboard}
+            dueContacts={dueContacts}
+            unresponsiveContacts={unresponsiveContacts}
+            staleYouths={staleYouths}
+            selectedContact={selectedContact}
+            selectedYouth={selectedYouth}
+            selectedYouthTimeline={selectedYouthTimeline}
+            reviewDrafts={reviewDrafts}
+            busy={busy}
+            nowMs={nowMs}
+            onReviewAction={reviewAction}
+            onAlertAction={alertAction}
+            onSelectContact={selectContact}
+            onSelectYouth={setSelectedYouthId}
+            onSetReviewDraft={(id, value) =>
+              setReviewDrafts((drafts) => ({ ...drafts, [id]: value }))
+            }
+          />
+        </section>
+
+        <section id="contacts" className="mt-5 scroll-mt-6">
           <RelationshipWorkspace
             contacts={dashboard.contacts}
             youths={dashboard.youths}
@@ -476,7 +576,35 @@ export default function DashboardClient({
           />
         </section>
 
-        <section className="mt-5 grid gap-5 xl:grid-cols-[1.2fr_1fr]">
+        <section id="settings" className="mt-5 scroll-mt-6 grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
+          <ManagerSettingsPanel
+            settings={settingsDraft}
+            busy={busy === "settings"}
+            onChange={setSettingsDraft}
+            onSave={saveSettings}
+          />
+          <FollowupIntelligencePanel
+            contacts={dashboard.contacts}
+            messages={dashboard.messages}
+            settings={dashboard.settings}
+            unresponsiveContacts={unresponsiveContacts}
+            staleYouths={staleYouths}
+            nowMs={nowMs}
+            onSelectContact={selectContact}
+            onSelectYouth={setSelectedYouthId}
+          />
+        </section>
+
+        <section id="command-routes" className="mt-5 scroll-mt-6">
+          <WhatsappCommandRouterPanel
+            settings={settingsDraft}
+            busy={busy === "settings"}
+            onChange={setSettingsDraft}
+            onSave={saveSettings}
+          />
+        </section>
+
+        <section id="reviews" className="mt-5 scroll-mt-6 grid gap-5 xl:grid-cols-[1.2fr_1fr]">
           <ReviewQueue
             reviews={dashboard.reviews}
             busy={busy}
@@ -487,7 +615,7 @@ export default function DashboardClient({
           <OwnerAlertsPanel alerts={dashboard.alerts} busy={busy} onAction={alertAction} />
         </section>
 
-        <section className="mt-5 grid gap-5 xl:grid-cols-[1fr_1fr]">
+        <section className="mt-5 scroll-mt-6 grid gap-5 xl:grid-cols-[1fr_1fr]">
           <ContactManager
             contacts={dashboard.contacts}
             form={contactForm}
@@ -511,6 +639,14 @@ export default function DashboardClient({
             onEdit={(youth) => setYouthForm(youthToForm(youth))}
             onDelete={removeYouth}
             onSelect={setSelectedYouthId}
+          />
+        </section>
+
+        <section id="reports" className="mt-5 scroll-mt-6">
+          <ReportsCommandCenter
+            dashboard={dashboard}
+            weeklyReport={weeklyReport}
+            nowMs={nowMs}
           />
         </section>
 
@@ -542,7 +678,7 @@ export default function DashboardClient({
           />
         </section>
 
-        <section className="mt-5">
+        <section id="policy" className="mt-5 scroll-mt-6">
           <PolicyPanel
             policy={policyDraft}
             busy={busy === "policy"}
@@ -551,7 +687,7 @@ export default function DashboardClient({
           />
         </section>
 
-        <section className="mt-5 grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+        <section id="whatsapp" className="mt-5 scroll-mt-6 grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
           <CommandPanel
             command={command}
             commandReply={commandReply}
@@ -561,6 +697,7 @@ export default function DashboardClient({
           />
           <ReportPanel reports={dashboard.reports} />
         </section>
+        </div>
       </div>
     </main>
   );
@@ -634,6 +771,142 @@ function ControlMetric({
         {label}
       </div>
       <div className="mt-2 text-lg font-bold">{value}</div>
+    </div>
+  );
+}
+
+function ManagerSideNav({ dashboard }: { dashboard: DashboardData }) {
+  const pending = dashboard.reviews.filter((review) => review.status === "pending").length;
+  const alerts = dashboard.alerts.filter((alert) => alert.status === "open").length;
+  const navItems = [
+    { href: "#today", label: "היום", icon: <Activity className="h-4 w-4" />, count: dashboard.stats.dueContacts },
+    { href: "#command", label: "חדר מצב", icon: <Database className="h-4 w-4" />, count: dashboard.stats.openOwnerAlerts },
+    { href: "#work", label: "עבודה", icon: <ClipboardCheck className="h-4 w-4" />, count: pending + alerts },
+    { href: "#contacts", label: "קשרים", icon: <Users className="h-4 w-4" />, count: dashboard.contacts.length },
+    { href: "#reviews", label: "אישורים", icon: <Send className="h-4 w-4" />, count: pending },
+    { href: "#reports", label: "דוחות", icon: <FileText className="h-4 w-4" />, count: dashboard.reports.length },
+    { href: "#settings", label: "הגדרות", icon: <Settings className="h-4 w-4" />, count: null },
+    { href: "#command-routes", label: "פקודות", icon: <SlidersHorizontal className="h-4 w-4" />, count: dashboard.settings.ownerCommandRoutes.length },
+    { href: "#whatsapp", label: "וואטסאפ", icon: <MessageCircle className="h-4 w-4" />, count: null },
+  ];
+
+  return (
+    <aside className="hidden lg:block">
+      <nav className="sticky top-4 rounded-lg border border-[#ded6c8] bg-white p-3 shadow-sm">
+        <div className="px-2 pb-3 text-xs font-bold text-[#6f675e]">
+          ניווט מנהל
+        </div>
+        <div className="grid gap-1">
+          {navItems.map((item) => (
+            <a
+              key={item.href}
+              href={item.href}
+              className="flex h-10 items-center justify-between gap-2 rounded-lg px-2 text-sm font-bold text-[#4e4841] transition hover:bg-[#f6f3ee]"
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                {item.icon}
+                <span className="truncate">{item.label}</span>
+              </span>
+              {item.count === null ? null : (
+                <span className="rounded-md bg-[#f2ede5] px-2 py-1 text-xs text-[#686158]">
+                  {item.count}
+                </span>
+              )}
+            </a>
+          ))}
+        </div>
+      </nav>
+    </aside>
+  );
+}
+
+function ReportsCommandCenter({
+  dashboard,
+  weeklyReport,
+  nowMs,
+}: {
+  dashboard: DashboardData;
+  weeklyReport: WeeklyReport | null;
+  nowMs: number;
+}) {
+  const dailyOutbound = dashboard.messages.filter(
+    (message) =>
+      message.direction === "outbound" &&
+      message.channel === "whatsapp" &&
+      isToday(message.createdAt, nowMs),
+  ).length;
+  const dailyInbound = dashboard.messages.filter(
+    (message) =>
+      message.direction === "inbound" &&
+      message.channel === "whatsapp" &&
+      isToday(message.createdAt, nowMs),
+  ).length;
+  const weeklyMessages = dashboard.messages.filter((message) =>
+    isWithinDays(message.createdAt, nowMs, 7),
+  ).length;
+  const monthlyYouthUpdates = dashboard.youths.filter((youth) =>
+    isWithinDays(youth.lastUpdateAt || youth.updatedAt || youth.createdAt, nowMs, 30),
+  ).length;
+  const openAlerts = dashboard.alerts.filter((alert) => alert.status === "open").length;
+  const pendingReviews = dashboard.reviews.filter((review) => review.status === "pending").length;
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <PanelEyebrow icon={<FileText className="h-4 w-4" />}>
+            מרכז דוחות
+          </PanelEyebrow>
+          <h2 className="mt-2 text-2xl font-bold">תמונת מנהל מסודרת</h2>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Badge tone={pendingReviews ? "amber" : "neutral"}>{pendingReviews} אישורים</Badge>
+          <Badge tone={openAlerts ? "rose" : "neutral"}>{openAlerts} אישי</Badge>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <ReportTile title="היום" primary={`${dailyOutbound} נשלחו`} secondary={`${dailyInbound} נכנסו`} />
+        <ReportTile title="השבוע" primary={`${weeklyMessages} הודעות`} secondary={`${dashboard.reports.length} דוחות`} />
+        <ReportTile title="החודש" primary={`${monthlyYouthUpdates} עדכוני נערים`} secondary={`${dashboard.youths.length} במעקב`} />
+        <ReportTile title="איכות נתונים" primary={`${dataQualityScore(dashboard)}%`} secondary="שלמות קשרים ונערים" />
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-[1fr_1fr]">
+        <div className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-4">
+          <div className="text-sm font-bold">דוח אחרון</div>
+          <p className="mt-2 whitespace-pre-line text-sm leading-6 text-[#4e4841]">
+            {weeklyReport?.body || dashboard.reports[0]?.body || "אין עדיין דוח להצגה."}
+          </p>
+        </div>
+        <div className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-4">
+          <div className="text-sm font-bold">דוחות מהירים בוואטסאפ</div>
+          <div className="mt-3 grid gap-2 text-sm leading-6 text-[#4e4841]">
+            <div>דוח - סיכום מצב מיידי</div>
+            <div>היום - משימות ותור</div>
+            <div>טיוטות - אישורים פתוחים</div>
+            <div>מי לא מגיב - רשימת קשרים שדורשים טיפול</div>
+          </div>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function ReportTile({
+  title,
+  primary,
+  secondary,
+}: {
+  title: string;
+  primary: string;
+  secondary: string;
+}) {
+  return (
+    <div className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-4">
+      <div className="text-xs font-bold text-[#6f675e]">{title}</div>
+      <div className="mt-2 text-xl font-bold">{primary}</div>
+      <div className="mt-1 text-sm text-[#686158]">{secondary}</div>
     </div>
   );
 }
@@ -714,6 +987,1176 @@ function StatCard({
       </div>
       <div className="mt-1 text-sm font-medium text-[#686158]">{label}</div>
     </div>
+  );
+}
+
+function ManagementCommandCenter({
+  dashboard,
+  dueContacts,
+  unresponsiveContacts,
+  staleYouths,
+  nowMs,
+  onSelectContact,
+  onSelectYouth,
+}: {
+  dashboard: DashboardData;
+  dueContacts: Contact[];
+  unresponsiveContacts: Contact[];
+  staleYouths: Youth[];
+  nowMs: number;
+  onSelectContact: (id: string) => void;
+  onSelectYouth: (id: string) => void;
+}) {
+  const activeContacts = dashboard.contacts.filter(
+    (contact) => contact.status === "active",
+  ).length;
+  const attentionContacts = dashboard.contacts.filter(
+    (contact) => contact.status === "needs_attention",
+  );
+  const pausedContacts = dashboard.contacts.filter(
+    (contact) => contact.status === "paused",
+  ).length;
+  const autoAllowed = dashboard.contacts.filter(
+    (contact) => contact.allowAutoSend && contact.status === "active",
+  ).length;
+  const pendingReviews = dashboard.reviews.filter(
+    (review) => review.status === "pending",
+  );
+  const sentReviews = dashboard.reviews.filter(
+    (review) => review.status === "sent",
+  ).length;
+  const openAlerts = dashboard.alerts.filter((alert) => alert.status === "open");
+  const inboundRecent = dashboard.messages.filter(
+    (message) =>
+      message.direction === "inbound" &&
+      nowMs - new Date(message.createdAt).getTime() <= 14 * 86400000,
+  ).length;
+  const outboundRecent = dashboard.messages.filter(
+    (message) =>
+      message.direction === "outbound" &&
+      nowMs - new Date(message.createdAt).getTime() <= 14 * 86400000,
+  ).length;
+  const workPressure =
+    dueContacts.length +
+    pendingReviews.length +
+    openAlerts.length +
+    unresponsiveContacts.length +
+    staleYouths.length;
+  const dailyCapacity = Math.max(1, dashboard.settings.dailyContactLimit);
+  const healthScore = clampPercent(
+    100 -
+      pendingReviews.length * 4 -
+      openAlerts.length * 9 -
+      unresponsiveContacts.length * 6 -
+      staleYouths.length * 2 -
+      (dashboard.settings.isEnabled ? 0 : 25),
+  );
+  const stageRows = youthStageRows(dashboard.youths);
+  const statusRows = contactStatusRows(dashboard.contacts);
+  const reviewRows = reviewStatusRows(dashboard.reviews);
+  const countryRows = topCountryRows(dashboard.contacts);
+  const latestMessages = dashboard.messages.slice(0, 6);
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <PanelEyebrow icon={<Activity className="h-4 w-4" />}>
+            לוח ניהול ראשי
+          </PanelEyebrow>
+          <h2 className="mt-2 text-2xl font-bold">חדר מצב יומי</h2>
+          <p className="mt-1 max-w-3xl text-sm leading-6 text-[#686158]">
+            תמונת עבודה מרוכזת: עומס, תגובות, נערים, ביקורות, התראות, ואיפה כדאי להתחיל.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Badge tone={healthScore >= 75 ? "neutral" : healthScore >= 45 ? "amber" : "rose"}>
+            בריאות {healthScore}%
+          </Badge>
+          <Badge tone={workPressure > dailyCapacity * 2 ? "rose" : "amber"}>
+            עומס {workPressure}
+          </Badge>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <CommandMetric
+          icon={<CalendarDays className="h-4 w-4" />}
+          label="תור היום"
+          value={`${dueContacts.length}/${dailyCapacity}`}
+          detail="אנשי קשר שמגיעים למעקב"
+          tone={dueContacts.length > dailyCapacity ? "rose" : "green"}
+        />
+        <CommandMetric
+          icon={<ClipboardCheck className="h-4 w-4" />}
+          label="ביקורות פתוחות"
+          value={pendingReviews.length}
+          detail={`${sentReviews} הודעות כבר נשלחו`}
+          tone={pendingReviews.length ? "amber" : "green"}
+        />
+        <CommandMetric
+          icon={<BellRing className="h-4 w-4" />}
+          label="מענה אישי"
+          value={openAlerts.length}
+          detail="שיחות שלא כדאי להשאיר לבוט"
+          tone={openAlerts.length ? "rose" : "green"}
+        />
+        <CommandMetric
+          icon={<ShieldCheck className="h-4 w-4" />}
+          label="אוטומציה מוכנה"
+          value={autoAllowed}
+          detail={`${activeContacts} פעילים, ${attentionContacts.length} לתשומת לב, ${pausedContacts} מושהים`}
+          tone={autoAllowed ? "blue" : "amber"}
+        />
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-[1fr_1fr_0.9fr]">
+        <div className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm font-bold">
+              <Brain className="h-4 w-4 text-[#203864]" />
+              סדר עדיפות
+            </div>
+            <Badge tone={workPressure > dailyCapacity ? "amber" : "neutral"}>
+              קיבולת {dailyCapacity}
+            </Badge>
+          </div>
+          <div className="mt-3 grid gap-2">
+            {openAlerts.slice(0, 2).map((alert) => (
+              <PriorityRow
+                key={alert.id}
+                icon={<BellRing className="h-4 w-4" />}
+                title={alert.contactName}
+                detail={alert.reason}
+                badge="מענה אישי"
+                tone="rose"
+                onClick={() => alert.contactId && onSelectContact(alert.contactId)}
+              />
+            ))}
+            {unresponsiveContacts.slice(0, 2).map((contact) => (
+              <PriorityRow
+                key={contact.id}
+                icon={<MessageCircle className="h-4 w-4" />}
+                title={contact.name}
+                detail={`אין תגובה ${daysSince(contact.lastContactedAt, nowMs)} ימים`}
+                badge="לא מגיב"
+                tone="rose"
+                onClick={() => onSelectContact(contact.id)}
+              />
+            ))}
+            {staleYouths.slice(0, 2).map((youth) => {
+              const contact = dashboard.contacts.find(
+                (item) => item.id === youth.contactId,
+              );
+              return (
+                <PriorityRow
+                  key={youth.id}
+                  icon={<Users className="h-4 w-4" />}
+                  title={youth.name}
+                  detail={`${contact?.name || "ללא איש קשר"} · ${youth.nextAction || "אין פעולה הבאה"}`}
+                  badge="נער ישן"
+                  tone="amber"
+                  onClick={() => {
+                    onSelectContact(youth.contactId);
+                    onSelectYouth(youth.id);
+                  }}
+                />
+              );
+            })}
+            {!openAlerts.length && !unresponsiveContacts.length && !staleYouths.length ? (
+              <EmptyState text="אין כרגע צוואר בקבוק משמעותי. אפשר לעבוד לפי התור היומי." />
+            ) : null}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-4">
+          <div className="flex items-center gap-2 text-sm font-bold">
+            <FileText className="h-4 w-4 text-[#174c3b]" />
+            מדדי עבודה
+          </div>
+          <div className="mt-3 grid gap-3">
+            <ProgressRow
+              label="ניצול תור יומי"
+              value={percent(dueContacts.length, dailyCapacity)}
+              caption={`${dueContacts.length} מתוך ${dailyCapacity}`}
+              tone={dueContacts.length > dailyCapacity ? "rose" : "green"}
+            />
+            <ProgressRow
+              label="תגובה מול שליחה ב-14 יום"
+              value={percent(inboundRecent, Math.max(1, outboundRecent))}
+              caption={`${inboundRecent} נכנסות / ${outboundRecent} יוצאות`}
+              tone={inboundRecent >= outboundRecent ? "green" : "amber"}
+            />
+            <ProgressRow
+              label="בריאות תפעולית"
+              value={healthScore}
+              caption="מבוסס על ביקורות, התראות וחוסר תגובה"
+              tone={healthScore >= 75 ? "green" : healthScore >= 45 ? "amber" : "rose"}
+            />
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-4">
+          <div className="flex items-center gap-2 text-sm font-bold">
+            <Database className="h-4 w-4 text-[#203864]" />
+            מצב נתונים
+          </div>
+          <div className="mt-3 grid gap-2">
+            <Mini label="הודעות במעקב" value={String(dashboard.messages.length)} />
+            <Mini label="דוחות מנהל" value={String(dashboard.reports.length)} />
+            <Mini label="מדינות/אזורים" value={String(countryRows.length)} />
+          </div>
+          <div className="mt-3 grid gap-2">
+            {countryRows.map((row) => (
+              <DistributionRow key={row.label} {...row} />
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-4">
+        <DistributionPanel title="שלבי נערים" rows={stageRows} />
+        <DistributionPanel title="סטטוס אנשי קשר" rows={statusRows} />
+        <DistributionPanel title="ביקורות" rows={reviewRows} />
+        <div className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-4">
+          <div className="flex items-center gap-2 text-sm font-bold">
+            <MessageCircle className="h-4 w-4 text-[#174c3b]" />
+            דופק אחרון
+          </div>
+          <div className="mt-3 grid gap-2">
+            {latestMessages.length ? (
+              latestMessages.map((message) => (
+                <div key={message.id} className="rounded-lg border border-[#e5ded2] bg-white p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <Badge tone={message.direction === "inbound" ? "amber" : "neutral"}>
+                      {message.direction === "inbound" ? "נכנסת" : "יוצאת"}
+                    </Badge>
+                    <span className="text-xs text-[#686158]">
+                      {formatDateTime(message.createdAt)}
+                    </span>
+                  </div>
+                  <p className="mt-2 line-clamp-2 text-sm leading-6 text-[#4e4841]">
+                    {message.aiSummary || message.body}
+                  </p>
+                </div>
+              ))
+            ) : (
+              <EmptyState text="אין עדיין הודעות להצגה." />
+            )}
+          </div>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function CommandMetric({
+  icon,
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  icon: ReactNode;
+  label: string;
+  value: string | number;
+  detail: string;
+  tone: "green" | "blue" | "amber" | "rose";
+}) {
+  const classes = {
+    green: "border-[#c9e4d3] bg-[#f4fbf7] text-[#15583f]",
+    blue: "border-[#cbd8ee] bg-[#f5f8fd] text-[#203864]",
+    amber: "border-[#ecd6a8] bg-[#fffaf0] text-[#7a5315]",
+    rose: "border-[#e9c4c1] bg-[#fff7f6] text-[#8a2929]",
+  };
+  return (
+    <div className={`rounded-lg border p-4 ${classes[tone]}`}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/80">
+          {icon}
+        </div>
+        <div className="text-2xl font-bold">{value}</div>
+      </div>
+      <div className="mt-3 text-sm font-bold">{label}</div>
+      <div className="mt-1 text-xs leading-5 opacity-80">{detail}</div>
+    </div>
+  );
+}
+
+function PriorityRow({
+  icon,
+  title,
+  detail,
+  badge,
+  tone,
+  onClick,
+}: {
+  icon: ReactNode;
+  title: string;
+  detail: string;
+  badge: string;
+  tone: "amber" | "rose";
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="rounded-lg border border-[#e5ded2] bg-white p-3 text-right transition hover:border-[#cfc3b1]"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#eef3fb] text-[#203864]">
+            {icon}
+          </span>
+          <span className="truncate font-bold">{title}</span>
+        </div>
+        <Badge tone={tone}>{badge}</Badge>
+      </div>
+      <div className="mt-2 line-clamp-2 text-xs leading-5 text-[#686158]">
+        {detail}
+      </div>
+    </button>
+  );
+}
+
+function ProgressRow({
+  label,
+  value,
+  caption,
+  tone,
+}: {
+  label: string;
+  value: number;
+  caption: string;
+  tone: "green" | "amber" | "rose";
+}) {
+  const colors = {
+    green: "bg-[#1f7a5a]",
+    amber: "bg-[#b7791f]",
+    rose: "bg-[#9b2f2f]",
+  };
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-2 text-sm">
+        <span className="font-bold">{label}</span>
+        <span className="text-[#686158]">{value}%</span>
+      </div>
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-[#e5ded2]">
+        <div className={`h-full rounded-full ${colors[tone]}`} style={{ width: `${value}%` }} />
+      </div>
+      <div className="mt-1 text-xs text-[#686158]">{caption}</div>
+    </div>
+  );
+}
+
+function DistributionPanel({
+  title,
+  rows,
+}: {
+  title: string;
+  rows: DistributionRowData[];
+}) {
+  return (
+    <div className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-4">
+      <div className="text-sm font-bold">{title}</div>
+      <div className="mt-3 grid gap-2">
+        {rows.length ? (
+          rows.map((row) => <DistributionRow key={row.label} {...row} />)
+        ) : (
+          <EmptyState text="אין נתונים להצגה." />
+        )}
+      </div>
+    </div>
+  );
+}
+
+type DistributionRowData = {
+  label: string;
+  value: number;
+  total: number;
+  tone: "green" | "blue" | "amber" | "rose";
+};
+
+function DistributionRow({ label, value, total, tone }: DistributionRowData) {
+  const colors = {
+    green: "bg-[#1f7a5a]",
+    blue: "bg-[#203864]",
+    amber: "bg-[#b7791f]",
+    rose: "bg-[#9b2f2f]",
+  };
+  const width = percent(value, total);
+  return (
+    <div className="rounded-lg border border-[#e5ded2] bg-white p-2">
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <span className="font-bold">{label}</span>
+        <span className="text-[#686158]">{value}</span>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#eee7dc]">
+        <div className={`h-full rounded-full ${colors[tone]}`} style={{ width: `${width}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function ProfessionalOpsCenter({
+  dashboard,
+  dueContacts,
+  unresponsiveContacts,
+  staleYouths,
+  selectedContact,
+  selectedYouth,
+  selectedYouthTimeline,
+  reviewDrafts,
+  busy,
+  nowMs,
+  onReviewAction,
+  onAlertAction,
+  onSelectContact,
+  onSelectYouth,
+  onSetReviewDraft,
+}: {
+  dashboard: DashboardData;
+  dueContacts: Contact[];
+  unresponsiveContacts: Contact[];
+  staleYouths: Youth[];
+  selectedContact?: Contact;
+  selectedYouth?: Youth;
+  selectedYouthTimeline: ContactTimelineItem[];
+  reviewDrafts: Record<string, string>;
+  busy: string | null;
+  nowMs: number;
+  onReviewAction: (
+    id: string,
+    action: "send" | "reject" | "edit" | "schedule",
+    scheduledFor?: string,
+  ) => void;
+  onAlertAction: (id: string, status: "handled" | "dismissed") => void;
+  onSelectContact: (id: string) => void;
+  onSelectYouth: (id: string) => void;
+  onSetReviewDraft: (id: string, value: string) => void;
+}) {
+  return (
+    <div className="grid gap-5">
+      <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
+        <SmartWorkInbox
+          dashboard={dashboard}
+          dueContacts={dueContacts}
+          unresponsiveContacts={unresponsiveContacts}
+          staleYouths={staleYouths}
+          busy={busy}
+          nowMs={nowMs}
+          onReviewAction={onReviewAction}
+          onAlertAction={onAlertAction}
+          onSelectContact={onSelectContact}
+          onSelectYouth={onSelectYouth}
+        />
+        <SendingCalendarPanel
+          reviews={dashboard.reviews}
+          settings={dashboard.settings}
+          busy={busy}
+          nowMs={nowMs}
+          onReviewAction={onReviewAction}
+        />
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
+        <ContactHealthBoard
+          dashboard={dashboard}
+          unresponsiveContacts={unresponsiveContacts}
+          staleYouths={staleYouths}
+          nowMs={nowMs}
+          onSelectContact={onSelectContact}
+        />
+        <YouthProgressBoard
+          youths={dashboard.youths}
+          contacts={dashboard.contacts}
+          selectedContact={selectedContact}
+          selectedYouth={selectedYouth}
+          selectedYouthTimeline={selectedYouthTimeline}
+          staleYouths={staleYouths}
+          nowMs={nowMs}
+          onSelectContact={onSelectContact}
+          onSelectYouth={onSelectYouth}
+        />
+      </div>
+
+      <div className="grid gap-5 xl:grid-cols-[0.95fr_1.05fr]">
+        <TemplatePanel
+          reviews={dashboard.reviews}
+          contacts={dashboard.contacts}
+          youths={dashboard.youths}
+          reviewDrafts={reviewDrafts}
+          onSetReviewDraft={onSetReviewDraft}
+        />
+        <SafetyLogPanel dashboard={dashboard} />
+      </div>
+    </div>
+  );
+}
+
+function SmartWorkInbox({
+  dashboard,
+  dueContacts,
+  unresponsiveContacts,
+  staleYouths,
+  busy,
+  nowMs,
+  onReviewAction,
+  onAlertAction,
+  onSelectContact,
+  onSelectYouth,
+}: {
+  dashboard: DashboardData;
+  dueContacts: Contact[];
+  unresponsiveContacts: Contact[];
+  staleYouths: Youth[];
+  busy: string | null;
+  nowMs: number;
+  onReviewAction: (
+    id: string,
+    action: "send" | "reject" | "edit" | "schedule",
+    scheduledFor?: string,
+  ) => void;
+  onAlertAction: (id: string, status: "handled" | "dismissed") => void;
+  onSelectContact: (id: string) => void;
+  onSelectYouth: (id: string) => void;
+}) {
+  const pendingReviews = dashboard.reviews.filter(
+    (review) => review.status === "pending",
+  );
+  const openAlerts = dashboard.alerts.filter((alert) => alert.status === "open");
+  const items = [
+    ...openAlerts.map((alert) => ({
+      id: alert.id,
+      kind: "alert" as const,
+      title: alert.contactName,
+      detail: alert.reason,
+      when: alert.createdAt,
+      tone: "rose" as const,
+      contactId: alert.contactId || "",
+      alert,
+    })),
+    ...pendingReviews.map((review) => ({
+      id: review.id,
+      kind: "review" as const,
+      title: review.contactName,
+      detail: review.aiReason,
+      when: review.scheduledFor,
+      tone: review.priority === "high" ? ("rose" as const) : ("amber" as const),
+      contactId: review.contactId || "",
+      review,
+    })),
+    ...unresponsiveContacts.slice(0, 8).map((contact) => ({
+      id: `unresponsive-${contact.id}`,
+      kind: "unresponsive" as const,
+      title: contact.name,
+      detail: `אין תגובה ${daysSince(contact.lastContactedAt, nowMs)} ימים`,
+      when: contact.lastContactedAt || contact.nextDueAt,
+      tone: "rose" as const,
+      contactId: contact.id,
+    })),
+    ...staleYouths.slice(0, 8).map((youth) => {
+      const contact = dashboard.contacts.find((item) => item.id === youth.contactId);
+      return {
+        id: `stale-youth-${youth.id}`,
+        kind: "stale_youth" as const,
+        title: youth.name,
+        detail: `${contact?.name || "איש קשר לא ידוע"} · עודכן לפני ${daysSince(
+          youth.lastUpdateAt || youth.updatedAt || youth.createdAt,
+          nowMs,
+        )} ימים`,
+        when: youth.lastUpdateAt || youth.updatedAt || youth.createdAt || "",
+        tone: "amber" as const,
+        contactId: youth.contactId,
+        youthId: youth.id,
+      };
+    }),
+    ...dueContacts.slice(0, 8).map((contact) => ({
+      id: `due-${contact.id}`,
+      kind: "due" as const,
+      title: contact.name,
+      detail: `${contact.country || "ללא מדינה"} · ${contact.bestContactTime}`,
+      when: contact.nextDueAt,
+      tone: "neutral" as const,
+      contactId: contact.id,
+    })),
+  ]
+    .sort((a, b) => urgencyRank(a.kind) - urgencyRank(b.kind) || a.when.localeCompare(b.when))
+    .slice(0, 12);
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PanelEyebrow icon={<ClipboardCheck className="h-4 w-4" />}>
+          תיבת עבודה חכמה
+        </PanelEyebrow>
+        <div className="flex flex-wrap gap-2">
+          <Badge tone="rose">{openAlerts.length} אישי</Badge>
+          <Badge tone="amber">{pendingReviews.length} אישור</Badge>
+          <Badge>{dueContacts.length} תור</Badge>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-2">
+        {items.length ? (
+          items.map((item) => (
+            <div
+              key={`${item.kind}-${item.id}`}
+              className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-3"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (item.contactId) {
+                      onSelectContact(item.contactId);
+                    }
+                    if ("youthId" in item && item.youthId) {
+                      onSelectYouth(item.youthId);
+                    }
+                  }}
+                  className="min-w-0 flex-1 text-right"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={item.tone}>{workKindLabel(item.kind)}</Badge>
+                    <span className="font-bold">{item.title}</span>
+                    <span className="text-xs text-[#686158]">
+                      {formatDateTime(item.when)}
+                    </span>
+                  </div>
+                  <p className="mt-2 line-clamp-2 text-sm leading-6 text-[#4e4841]">
+                    {item.detail}
+                  </p>
+                </button>
+
+                {item.kind === "review" && "review" in item ? (
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    <ActionButton
+                      busy={busy === item.review.id}
+                      tone="green"
+                      onClick={() => onReviewAction(item.review.id, "send")}
+                      icon={<Send className="h-4 w-4" />}
+                    >
+                      שלח
+                    </ActionButton>
+                    <IconButton
+                      title="דחה בחצי שעה"
+                      onClick={() =>
+                        onReviewAction(
+                          item.review.id,
+                          "schedule",
+                          addMinutesIso(30),
+                        )
+                      }
+                    >
+                      <CalendarDays className="h-4 w-4" />
+                      30 דק׳
+                    </IconButton>
+                  </div>
+                ) : null}
+
+                {item.kind === "alert" && "alert" in item ? (
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    <ActionButton
+                      busy={busy === item.alert.id}
+                      tone="green"
+                      onClick={() => onAlertAction(item.alert.id, "handled")}
+                      icon={<UserCheck className="h-4 w-4" />}
+                    >
+                      טופל
+                    </ActionButton>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ))
+        ) : (
+          <EmptyState text="אין כרגע משימות פתוחות." />
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+function SendingCalendarPanel({
+  reviews,
+  settings,
+  busy,
+  nowMs,
+  onReviewAction,
+}: {
+  reviews: ReviewItem[];
+  settings: BotSettings;
+  busy: string | null;
+  nowMs: number;
+  onReviewAction: (
+    id: string,
+    action: "send" | "reject" | "edit" | "schedule",
+    scheduledFor?: string,
+  ) => void;
+}) {
+  const pending = reviews
+    .filter((review) => review.status === "pending")
+    .sort((a, b) => a.scheduledFor.localeCompare(b.scheduledFor));
+  const today = pending.filter((review) => isToday(review.scheduledFor, nowMs));
+  const later = pending.filter((review) => !isToday(review.scheduledFor, nowMs));
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PanelEyebrow icon={<CalendarDays className="h-4 w-4" />}>
+          יומן שליחות
+        </PanelEyebrow>
+        <div className="flex flex-wrap gap-2">
+          <Badge>{settings.sendWindowStart}-{settings.sendWindowEnd}</Badge>
+          <Badge tone="amber">כל {settings.sendIntervalMinutes} דק׳</Badge>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3">
+        <CalendarBucket
+          title="היום"
+          reviews={today}
+          busy={busy}
+          settings={settings}
+          onReviewAction={onReviewAction}
+        />
+        <CalendarBucket
+          title="בהמשך"
+          reviews={later.slice(0, 8)}
+          busy={busy}
+          settings={settings}
+          onReviewAction={onReviewAction}
+        />
+      </div>
+    </Panel>
+  );
+}
+
+function CalendarBucket({
+  title,
+  reviews,
+  busy,
+  settings,
+  onReviewAction,
+}: {
+  title: string;
+  reviews: ReviewItem[];
+  busy: string | null;
+  settings: BotSettings;
+  onReviewAction: (
+    id: string,
+    action: "send" | "reject" | "edit" | "schedule",
+    scheduledFor?: string,
+  ) => void;
+}) {
+  return (
+    <div>
+      <div className="mb-2 text-sm font-bold">{title}</div>
+      <div className="grid gap-2">
+        {reviews.length ? (
+          reviews.map((review) => (
+            <div key={review.id} className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="font-bold">{review.contactName}</div>
+                  <div className="mt-1 text-xs text-[#686158]">
+                    {formatDateTime(review.scheduledFor)}
+                  </div>
+                </div>
+                <PriorityBadge priority={review.priority} />
+              </div>
+              <p className="mt-2 line-clamp-2 text-xs leading-5 text-[#7b7368]">
+                {review.draftMessage}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <IconButton
+                  title="דחה בחצי שעה"
+                  onClick={() =>
+                    onReviewAction(
+                      review.id,
+                      "schedule",
+                      addMinutesIso(settings.sendIntervalMinutes),
+                    )
+                  }
+                >
+                  <CalendarDays className="h-4 w-4" />
+                  +{settings.sendIntervalMinutes}
+                </IconButton>
+                <IconButton
+                  title="שלח מחר"
+                  onClick={() =>
+                    onReviewAction(
+                      review.id,
+                      "schedule",
+                      tomorrowAtIso(settings.sendWindowStart),
+                    )
+                  }
+                >
+                  <CalendarDays className="h-4 w-4" />
+                  מחר
+                </IconButton>
+                <ActionButton
+                  busy={busy === review.id}
+                  tone="green"
+                  onClick={() => onReviewAction(review.id, "send")}
+                  icon={<Send className="h-4 w-4" />}
+                >
+                  שלח
+                </ActionButton>
+              </div>
+            </div>
+          ))
+        ) : (
+          <EmptyState text="אין פריטים." />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ContactHealthBoard({
+  dashboard,
+  unresponsiveContacts,
+  staleYouths,
+  nowMs,
+  onSelectContact,
+}: {
+  dashboard: DashboardData;
+  unresponsiveContacts: Contact[];
+  staleYouths: Youth[];
+  nowMs: number;
+  onSelectContact: (id: string) => void;
+}) {
+  const rows = contactHealthRows(
+    dashboard,
+    unresponsiveContacts,
+    staleYouths,
+    nowMs,
+  );
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PanelEyebrow icon={<Activity className="h-4 w-4" />}>
+          בריאות אנשי קשר
+        </PanelEyebrow>
+        <Badge tone={rows.some((row) => row.score < 45) ? "rose" : "neutral"}>
+          {rows.filter((row) => row.score < 45).length} בסיכון
+        </Badge>
+      </div>
+
+      <div className="mt-4 grid gap-2">
+        {rows.slice(0, 10).map((row) => (
+          <button
+            key={row.contact.id}
+            type="button"
+            onClick={() => onSelectContact(row.contact.id)}
+            className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-3 text-right transition hover:border-[#cfc3b1]"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="font-bold">{row.contact.name}</div>
+                <div className="mt-1 text-xs text-[#686158]">{row.reason}</div>
+              </div>
+              <Badge tone={row.score >= 70 ? "neutral" : row.score >= 45 ? "amber" : "rose"}>
+                {row.score}%
+              </Badge>
+            </div>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-[#e5ded2]">
+              <div
+                className={`h-full rounded-full ${
+                  row.score >= 70
+                    ? "bg-[#1f7a5a]"
+                    : row.score >= 45
+                      ? "bg-[#b7791f]"
+                      : "bg-[#9b2f2f]"
+                }`}
+                style={{ width: `${row.score}%` }}
+              />
+            </div>
+          </button>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function YouthProgressBoard({
+  youths,
+  contacts,
+  selectedContact,
+  selectedYouth,
+  selectedYouthTimeline,
+  staleYouths,
+  nowMs,
+  onSelectContact,
+  onSelectYouth,
+}: {
+  youths: Youth[];
+  contacts: Contact[];
+  selectedContact?: Contact;
+  selectedYouth?: Youth;
+  selectedYouthTimeline: ContactTimelineItem[];
+  staleYouths: Youth[];
+  nowMs: number;
+  onSelectContact: (id: string) => void;
+  onSelectYouth: (id: string) => void;
+}) {
+  const youth = selectedYouth || staleYouths[0] || youths[0];
+  const contact =
+    selectedContact?.id === youth?.contactId
+      ? selectedContact
+      : contacts.find((item) => item.id === youth?.contactId);
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PanelEyebrow icon={<Users className="h-4 w-4" />}>
+          כרטיס נער מתקדם
+        </PanelEyebrow>
+        <Badge tone={staleYouths.length ? "amber" : "neutral"}>
+          {staleYouths.length} בלי עדכון
+        </Badge>
+      </div>
+
+      {youth ? (
+        <div className="mt-4 grid gap-4 lg:grid-cols-[0.85fr_1.15fr]">
+          <div className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <button
+                  type="button"
+                  className="text-right text-xl font-bold"
+                  onClick={() => {
+                    onSelectContact(youth.contactId);
+                    onSelectYouth(youth.id);
+                  }}
+                >
+                  {youth.name}
+                </button>
+                <div className="mt-1 text-sm text-[#686158]">
+                  {contact?.name || "איש קשר לא ידוע"} · {youth.city || "ללא עיר"}
+                </div>
+              </div>
+              <Badge tone={youth.stage === "needs_followup" ? "rose" : "amber"}>
+                {stageLabels[youth.stage]}
+              </Badge>
+            </div>
+
+            <div className="mt-4">
+              <StageRail stage={youth.stage} />
+            </div>
+
+            <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              <Mini label="נכנס" value={formatDateTime(youth.createdAt)} />
+              <Mini
+                label="עודכן"
+                value={`${daysSince(
+                  youth.lastUpdateAt || youth.updatedAt || youth.createdAt,
+                  nowMs,
+                )} ימים`}
+              />
+              <Mini label="אבני דרך" value={String(youth.milestones.length)} />
+              <Mini label="התקדמות" value={`${youthProgressPercent(youth.stage)}%`} />
+            </div>
+
+            <div className="mt-4 rounded-lg border border-[#e5ded2] bg-white p-3">
+              <div className="text-xs font-bold text-[#6f675e]">פעולה הבאה</div>
+              <p className="mt-2 text-sm leading-6 text-[#4e4841]">
+                {youth.nextAction || "לא הוגדרה פעולה הבאה."}
+              </p>
+            </div>
+          </div>
+
+          <div>
+            <div className="mb-2 flex items-center gap-2 text-sm font-bold">
+              <FileText className="h-4 w-4 text-[#203864]" />
+              היסטוריית נער
+            </div>
+            <TimelineList
+              items={selectedYouthTimeline.slice(0, 6)}
+              emptyText="אין עדיין היסטוריה ממוקדת לנער הזה."
+              compact
+            />
+          </div>
+        </div>
+      ) : (
+        <EmptyState text="אין עדיין נערים להצגה." />
+      )}
+    </Panel>
+  );
+}
+
+function StageRail({ stage }: { stage: Youth["stage"] }) {
+  const stages = Object.keys(stageLabels) as Youth["stage"][];
+  const currentIndex = stages.indexOf(stage);
+  return (
+    <div className="grid gap-2">
+      {stages.map((item, index) => (
+        <div key={item} className="flex items-center gap-3">
+          <span
+            className={`flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold ${
+              index <= currentIndex
+                ? "bg-[#203864] text-white"
+                : "bg-[#eee7dc] text-[#686158]"
+            }`}
+          >
+            {index + 1}
+          </span>
+          <span className="text-sm font-bold">{stageLabels[item]}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TemplatePanel({
+  reviews,
+  contacts,
+  youths,
+  reviewDrafts,
+  onSetReviewDraft,
+}: {
+  reviews: ReviewItem[];
+  contacts: Contact[];
+  youths: Youth[];
+  reviewDrafts: Record<string, string>;
+  onSetReviewDraft: (id: string, value: string) => void;
+}) {
+  const pending = reviews.filter((review) => review.status === "pending");
+  const [selectedReviewId, setSelectedReviewId] = useState("");
+  const activeReviewId =
+    selectedReviewId && pending.some((review) => review.id === selectedReviewId)
+      ? selectedReviewId
+      : pending[0]?.id || "";
+  const review = pending.find((item) => item.id === activeReviewId);
+  const contact = contacts.find((item) => item.id === review?.contactId);
+  const youth = youths.find((item) => item.id === review?.youthId);
+  const templates = messageTemplates.map((template) => ({
+    ...template,
+    body: renderMessageTemplate(template.id, contact, youth, review),
+  }));
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PanelEyebrow icon={<FileText className="h-4 w-4" />}>
+          תבניות הודעה
+        </PanelEyebrow>
+        <Badge>{pending.length} טיוטות</Badge>
+      </div>
+
+      <div className="mt-4 grid gap-3">
+        <SelectInput
+          label="טיוטה"
+          value={activeReviewId}
+          onChange={setSelectedReviewId}
+          options={
+            pending.length
+              ? pending.map((item) => ({
+                  value: item.id,
+                  label: `${item.contactName} · ${formatDateTime(item.scheduledFor)}`,
+                }))
+              : [{ value: "", label: "אין טיוטות פתוחות" }]
+          }
+        />
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          {templates.map((template) => (
+            <button
+              key={template.id}
+              type="button"
+              disabled={!review}
+              onClick={() => review && onSetReviewDraft(review.id, template.body)}
+              className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-3 text-right transition hover:border-[#cfc3b1] disabled:opacity-60"
+            >
+              <div className="font-bold">{template.label}</div>
+              <p className="mt-2 line-clamp-3 text-xs leading-5 text-[#686158]">
+                {template.body}
+              </p>
+            </button>
+          ))}
+        </div>
+
+        {review ? (
+          <div className="rounded-lg border border-[#d8e5dc] bg-white p-3">
+            <div className="text-xs font-bold text-[#6f675e]">טיוטה נוכחית</div>
+            <p className="mt-2 whitespace-pre-line text-sm leading-6 text-[#4e4841]">
+              {reviewDrafts[review.id] || review.draftMessage}
+            </p>
+          </div>
+        ) : null}
+      </div>
+    </Panel>
+  );
+}
+
+function SafetyLogPanel({ dashboard }: { dashboard: DashboardData }) {
+  const systemMessages = dashboard.messages
+    .filter((message) => message.channel === "system")
+    .slice(0, 8);
+  const sentReviews = dashboard.reviews
+    .filter((review) => review.status === "sent")
+    .slice(0, 4);
+  const blockedReviews = dashboard.reviews
+    .filter((review) => review.aiReason.includes("לא נשלח"))
+    .slice(0, 4);
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PanelEyebrow icon={<ShieldCheck className="h-4 w-4" />}>
+          לוג בטיחות ושליחות
+        </PanelEyebrow>
+        <div className="flex flex-wrap gap-2">
+          <Badge>{systemMessages.length} מערכת</Badge>
+          <Badge tone={blockedReviews.length ? "amber" : "neutral"}>
+            {blockedReviews.length} חסימות
+          </Badge>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        <div className="grid gap-2">
+          {systemMessages.length ? (
+            systemMessages.map((message) => (
+              <div key={message.id} className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-3">
+                <div className="text-xs text-[#686158]">
+                  {formatDateTime(message.createdAt)}
+                </div>
+                <p className="mt-2 text-sm leading-6 text-[#4e4841]">
+                  {message.body}
+                </p>
+              </div>
+            ))
+          ) : (
+            <EmptyState text="אין אירועי מערכת להצגה." />
+          )}
+        </div>
+
+        <div className="grid gap-2">
+          {sentReviews.concat(blockedReviews).length ? (
+            sentReviews.concat(blockedReviews).map((review) => (
+              <div key={`${review.id}-${review.status}`} className="rounded-lg border border-[#e5ded2] bg-white p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-bold">{review.contactName}</span>
+                  <Badge tone={review.status === "sent" ? "neutral" : "amber"}>
+                    {reviewStatusLabel(review.status)}
+                  </Badge>
+                </div>
+                <p className="mt-2 line-clamp-2 text-xs leading-5 text-[#7b7368]">
+                  {review.aiReason || review.draftMessage}
+                </p>
+              </div>
+            ))
+          ) : (
+            <EmptyState text="אין שליחות או חסימות להצגה." />
+          )}
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -1058,6 +2501,370 @@ function TimelineIcon({ type }: { type: ContactTimelineItem["type"] }) {
     return <UserCheck className="h-4 w-4" />;
   }
   return <Users className="h-4 w-4" />;
+}
+
+function ManagerSettingsPanel({
+  settings,
+  busy,
+  onChange,
+  onSave,
+}: {
+  settings: BotSettings;
+  busy: boolean;
+  onChange: (settings: BotSettings) => void;
+  onSave: () => void;
+}) {
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PanelEyebrow icon={<Settings className="h-4 w-4" />}>
+          הגדרות מנהל
+        </PanelEyebrow>
+        <ActionButton busy={busy} tone="blue" onClick={onSave} icon={<Save className="h-4 w-4" />}>
+          שמור
+        </ActionButton>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <NumberInput
+          label="אנשי קשר ביום"
+          value={settings.dailyContactLimit}
+          min={1}
+          max={10}
+          onChange={(value) => onChange({ ...settings, dailyContactLimit: value })}
+        />
+        <NumberInput
+          label="נערים בהודעה"
+          value={settings.maxYouthsPerMessage}
+          min={1}
+          max={10}
+          onChange={(value) => onChange({ ...settings, maxYouthsPerMessage: value })}
+        />
+        <NumberInput
+          label="ימי המתנה לתגובה"
+          value={settings.noResponseFollowupDays}
+          min={1}
+          max={60}
+          onChange={(value) => onChange({ ...settings, noResponseFollowupDays: value })}
+        />
+        <NumberInput
+          label="נער ללא עדכון אחרי ימים"
+          value={settings.staleYouthDays}
+          min={1}
+          max={365}
+          onChange={(value) => onChange({ ...settings, staleYouthDays: value })}
+        />
+        <TextInput
+          label="שליחה מותרת מ"
+          value={settings.sendWindowStart}
+          onChange={(value) => onChange({ ...settings, sendWindowStart: value })}
+        />
+        <TextInput
+          label="שליחה מותרת עד"
+          value={settings.sendWindowEnd}
+          onChange={(value) => onChange({ ...settings, sendWindowEnd: value })}
+        />
+        <NumberInput
+          label="מרווח שליחה בדקות"
+          value={settings.sendIntervalMinutes}
+          min={30}
+          max={240}
+          onChange={(value) => onChange({ ...settings, sendIntervalMinutes: value })}
+        />
+        <SelectInput
+          label="רמת אוטומציה"
+          value={settings.automationLevel}
+          onChange={(value) =>
+            onChange({
+              ...settings,
+              automationLevel: value as BotSettings["automationLevel"],
+            })
+          }
+          options={[
+            { value: "drafts", label: "טיוטות בלבד" },
+            { value: "auto_with_review", label: "אוטומטי עם ביקורת" },
+            { value: "full_auto", label: "אוטומטי מלא" },
+          ]}
+        />
+        <TextInput
+          label="וואטסאפ מנהל"
+          value={settings.ownerWhatsapp}
+          onChange={(value) => onChange({ ...settings, ownerWhatsapp: value })}
+        />
+        <TextInput
+          label="תחילת שעות שקט"
+          value={settings.quietHoursStart}
+          onChange={(value) => onChange({ ...settings, quietHoursStart: value })}
+        />
+        <TextInput
+          label="סוף שעות שקט"
+          value={settings.quietHoursEnd}
+          onChange={(value) => onChange({ ...settings, quietHoursEnd: value })}
+        />
+        <TextInput
+          label="טון כללי"
+          value={settings.tone}
+          onChange={(value) => onChange({ ...settings, tone: value })}
+          wide
+        />
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        <Mini label="תור יומי" value={`${settings.dailyContactLimit} אנשי קשר`} />
+        <Mini label="חלון שליחה" value={`${settings.sendWindowStart}-${settings.sendWindowEnd}`} />
+        <Mini label="קצב שליחה" value={`אחת כל ${settings.sendIntervalMinutes} דקות`} />
+      </div>
+    </Panel>
+  );
+}
+
+function WhatsappCommandRouterPanel({
+  settings,
+  busy,
+  onChange,
+  onSave,
+}: {
+  settings: BotSettings;
+  busy: boolean;
+  onChange: (settings: BotSettings) => void;
+  onSave: () => void;
+}) {
+  const routes = mergeOwnerCommandRoutes(settings.ownerCommandRoutes);
+  const enabledRoutes = routes.filter((route) => route.enabled);
+  const triggerCount = routes.reduce(
+    (sum, route) => sum + route.triggers.length,
+    0,
+  );
+
+  const updateRoute = (id: string, patch: Partial<OwnerCommandRoute>) => {
+    onChange({
+      ...settings,
+      ownerCommandRoutes: routes.map((route) =>
+        route.id === id ? { ...route, ...patch } : route,
+      ),
+    });
+  };
+
+  const splitTriggers = (value: string) =>
+    value
+      .split(/\r?\n/)
+      .map((trigger) => trigger.trim())
+      .filter(Boolean);
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PanelEyebrow icon={<MessageCircle className="h-4 w-4" />}>
+          מילון פקודות וואטסאפ
+        </PanelEyebrow>
+        <ActionButton busy={busy} tone="blue" onClick={onSave} icon={<Save className="h-4 w-4" />}>
+          שמור פקודות
+        </ActionButton>
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        <Mini label="פקודות פעילות" value={`${enabledRoutes.length}/${routes.length}`} />
+        <Mini label="מילים מפעילות" value={`${triggerCount}`} />
+        <Mini label="מסלול שמירה" value="דשבורד -> WhatsApp" />
+      </div>
+
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+        {routes.map((route) => (
+          <div key={route.id} className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-sm font-bold">{route.label}</div>
+                <div className="mt-1 text-xs text-[#6f675e]">{route.id}</div>
+              </div>
+              <Badge tone={route.enabled ? "neutral" : "rose"}>
+                {route.enabled ? "פעיל" : "כבוי"}
+              </Badge>
+            </div>
+
+            <div className="mt-3 grid gap-3">
+              <CheckboxRow
+                label="פעיל בווטסאפ"
+                checked={route.enabled}
+                onChange={(checked) => updateRoute(route.id, { enabled: checked })}
+              />
+              <TextInput
+                label="יעד במערכת"
+                value={route.destination}
+                onChange={(destination) => updateRoute(route.id, { destination })}
+              />
+              <TextareaInput
+                label="מילים מפעילות"
+                value={route.triggers.join("\n")}
+                rows={3}
+                onChange={(value) =>
+                  updateRoute(route.id, { triggers: splitTriggers(value) })
+                }
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function FollowupIntelligencePanel({
+  contacts,
+  messages,
+  settings,
+  unresponsiveContacts,
+  staleYouths,
+  nowMs,
+  onSelectContact,
+  onSelectYouth,
+}: {
+  contacts: Contact[];
+  messages: DashboardData["messages"];
+  settings: BotSettings;
+  unresponsiveContacts: Contact[];
+  staleYouths: Youth[];
+  nowMs: number;
+  onSelectContact: (id: string) => void;
+  onSelectYouth: (id: string) => void;
+}) {
+  const contactById = new Map(contacts.map((contact) => [contact.id, contact]));
+  const priorityContacts = contacts.filter(
+    (contact) => contact.status === "needs_attention",
+  );
+  const recommendations = [
+    unresponsiveContacts.length
+      ? `להתחיל היום עם ${unresponsiveContacts[0].name}, אין תגובה כבר ${daysSince(
+          unresponsiveContacts[0].lastContactedAt,
+          nowMs,
+        )} ימים.`
+      : "",
+    staleYouths.length
+      ? `לבקש עדכון על ${staleYouths[0].name}, הכרטיס שלו לא התעדכן ${daysSince(
+          staleYouths[0].lastUpdateAt ||
+            staleYouths[0].updatedAt ||
+            staleYouths[0].createdAt,
+          nowMs,
+        )} ימים.`
+      : "",
+    priorityContacts.length
+      ? `${priorityContacts.length} אנשי קשר מסומנים כצריכים תשומת לב.`
+      : "",
+  ].filter(Boolean);
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PanelEyebrow icon={<AlertCircle className="h-4 w-4" />}>
+          תור חכם ומעקב תגובות
+        </PanelEyebrow>
+        <div className="flex flex-wrap gap-2">
+          <Badge tone="rose">{unresponsiveContacts.length} לא מגיבים</Badge>
+          <Badge tone="amber">{staleYouths.length} נערים בלי עדכון</Badge>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <div>
+          <div className="mb-2 flex items-center gap-2 text-sm font-bold">
+            <MessageCircle className="h-4 w-4 text-[#9b2f2f]" />
+            מי לא מגיב
+          </div>
+          <div className="grid gap-2">
+            {unresponsiveContacts.length === 0 ? (
+              <EmptyState text="אין כרגע אנשי קשר שעברו את זמן ההמתנה לתגובה." />
+            ) : (
+              unresponsiveContacts.slice(0, 6).map((contact) => (
+                <button
+                  key={contact.id}
+                  type="button"
+                  onClick={() => onSelectContact(contact.id)}
+                  className="rounded-lg border border-[#ead0cd] bg-[#fff8f7] p-3 text-right transition hover:border-[#d89c95]"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="font-bold">{contact.name}</span>
+                    <Badge tone="rose">
+                      {daysSince(contact.lastContactedAt, nowMs)} ימים
+                    </Badge>
+                  </div>
+                  <div className="mt-1 text-xs leading-5 text-[#686158]">
+                    נשלח לאחרונה: {formatDateTime(contact.lastContactedAt)}
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-[#7b7368]">
+                    {latestContactMessage(messages, contact.id) || "אין תקציר הודעה אחרונה."}
+                  </p>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+
+        <div>
+          <div className="mb-2 flex items-center gap-2 text-sm font-bold">
+            <Users className="h-4 w-4 text-[#203864]" />
+            נערים שצריך לעדכן
+          </div>
+          <div className="grid gap-2">
+            {staleYouths.length === 0 ? (
+              <EmptyState text="כל הנערים עודכנו במסגרת הזמן שהוגדרה." />
+            ) : (
+              staleYouths.slice(0, 6).map((youth) => {
+                const contact = contactById.get(youth.contactId);
+                return (
+                  <button
+                    key={youth.id}
+                    type="button"
+                    onClick={() => {
+                      onSelectContact(youth.contactId);
+                      onSelectYouth(youth.id);
+                    }}
+                    className="rounded-lg border border-[#d8d4e8] bg-[#f8f7fd] p-3 text-right transition hover:border-[#b9afd9]"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-bold">{youth.name}</span>
+                      <Badge>{stageLabels[youth.stage]}</Badge>
+                    </div>
+                    <div className="mt-1 text-xs leading-5 text-[#686158]">
+                      {contact?.name || "איש קשר לא ידוע"} · עודכן לפני{" "}
+                      {daysSince(youth.lastUpdateAt || youth.updatedAt || youth.createdAt, nowMs)} ימים
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-[#7b7368]">
+                      {youth.nextAction || "לא הוגדרה פעולה הבאה."}
+                    </p>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        <Mini label="ממתינים לתגובה אחרי" value={`${settings.noResponseFollowupDays} ימים`} />
+        <Mini label="נער נחשב ישן אחרי" value={`${settings.staleYouthDays} ימים`} />
+        <Mini label="צריך תשומת לב" value={`${priorityContacts.length} אנשי קשר`} />
+      </div>
+
+      <div className="mt-4 rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-3">
+        <div className="flex items-center gap-2 text-sm font-bold">
+          <Brain className="h-4 w-4 text-[#203864]" />
+          המלצות עבודה
+        </div>
+        <div className="mt-2 grid gap-2">
+          {recommendations.length ? (
+            recommendations.map((recommendation) => (
+              <div key={recommendation} className="text-sm leading-6 text-[#4e4841]">
+                {recommendation}
+              </div>
+            ))
+          ) : (
+            <div className="text-sm leading-6 text-[#686158]">
+              התור נראה רגוע, כדאי להתקדם לפי אנשי הקשר שמגיעים למעקב היום.
+            </div>
+          )}
+        </div>
+      </div>
+    </Panel>
+  );
 }
 
 function ReviewQueue({
@@ -1635,15 +3442,19 @@ function NumberInput({
   label,
   value,
   onChange,
+  min = 0,
+  max = 365,
 }: {
   label: string;
   value: number;
   onChange: (value: number) => void;
+  min?: number;
+  max?: number;
 }) {
   return (
     <label>
       <span className="text-xs font-bold text-[#6f675e]">{label}</span>
-      <input type="number" min={0} max={100} value={value} onChange={(event) => onChange(Number(event.target.value))} className="mt-1 h-10 w-full rounded-lg border border-[#d8d0c4] bg-white px-3 text-sm outline-none focus:border-[#1f7a5a]" />
+      <input type="number" min={min} max={max} value={value} onChange={(event) => onChange(Number(event.target.value))} className="mt-1 h-10 w-full rounded-lg border border-[#d8d0c4] bg-white px-3 text-sm outline-none focus:border-[#1f7a5a]" />
     </label>
   );
 }
@@ -1858,6 +3669,368 @@ function createDashboardTimeline(
       youthName: youth.name,
     })),
   ].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+function isContactUnresponsive(
+  contact: Contact,
+  messages: DashboardData["messages"],
+  waitDays: number,
+  nowMs: number,
+) {
+  if (!contact.lastContactedAt || contact.status === "paused") {
+    return false;
+  }
+
+  const lastContactedMs = new Date(contact.lastContactedAt).getTime();
+  const hasInboundAfterLastContact = messages.some((message) => {
+    return (
+      message.contactId === contact.id &&
+      message.direction === "inbound" &&
+      new Date(message.createdAt).getTime() > lastContactedMs
+    );
+  });
+
+  return !hasInboundAfterLastContact && daysSince(contact.lastContactedAt, nowMs) >= waitDays;
+}
+
+function isYouthStale(youth: Youth, staleDays: number, nowMs: number) {
+  return daysSince(youth.lastUpdateAt || youth.updatedAt || youth.createdAt, nowMs) >= staleDays;
+}
+
+function lastYouthUpdateMs(youth: Youth) {
+  return new Date(
+    youth.lastUpdateAt || youth.updatedAt || youth.createdAt || 0,
+  ).getTime();
+}
+
+function daysSince(value?: string | null, nowMs = Date.now()) {
+  if (!value) {
+    return 999;
+  }
+
+  const dateMs = new Date(value).getTime();
+  if (Number.isNaN(dateMs)) {
+    return 999;
+  }
+
+  return Math.max(0, Math.floor((nowMs - dateMs) / 86400000));
+}
+
+function latestContactMessage(
+  messages: DashboardData["messages"],
+  contactId: string,
+) {
+  const message = messages
+    .filter((item) => item.contactId === contactId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  if (!message) {
+    return "";
+  }
+
+  return message.aiSummary || message.body;
+}
+
+const messageTemplates = [
+  { id: "gentle_checkin", label: "בדיקה עדינה" },
+  { id: "no_response", label: "לא הגיב" },
+  { id: "youth_progress", label: "התקדמות נער" },
+  { id: "holiday_sensitive", label: "לפני שבת/חג" },
+  { id: "short_confirm", label: "אישור קצר" },
+];
+
+function renderMessageTemplate(
+  templateId: string,
+  contact?: Contact,
+  youth?: Youth,
+  review?: ReviewItem,
+) {
+  const contactName = contact?.name || review?.contactName || "שלום וברכה";
+  const youthName = youth?.name || review?.youthName || "הנערים";
+
+  if (templateId === "no_response") {
+    return `שלום וברכה ${contactName}, רק מוודא בעדינות שההודעה הקודמת הגיעה. אם יש עדכון קצר על ${youthName}, אשמח לשמוע כשנוח.`;
+  }
+
+  if (templateId === "youth_progress") {
+    return `שלום וברכה ${contactName}, רציתי לשאול מה שלום ${youthName}. האם היה משהו חדש בענייני שיעור, שבת, תפילין, ברית או קשר נוסף?`;
+  }
+
+  if (templateId === "holiday_sensitive") {
+    return `שלום וברכה ${contactName}, לפני שבת/חג רציתי לשאול בעדינות אם יש עדכון קצר על ${youthName}. בשורות טובות.`;
+  }
+
+  if (templateId === "short_confirm") {
+    return `תודה רבה ${contactName}, קיבלתי. אעדכן אצלי ואמשיך לעקוב בעזרת השם.`;
+  }
+
+  return `שלום וברכה ${contactName}, מה שלומכם? רציתי לשאול בעדינות אם יש עדכון טוב על ${youthName}.`;
+}
+
+function urgencyRank(kind: string) {
+  if (kind === "alert") {
+    return 0;
+  }
+  if (kind === "review") {
+    return 1;
+  }
+  if (kind === "unresponsive") {
+    return 2;
+  }
+  if (kind === "stale_youth") {
+    return 3;
+  }
+  return 4;
+}
+
+function workKindLabel(kind: string) {
+  if (kind === "alert") {
+    return "מענה אישי";
+  }
+  if (kind === "review") {
+    return "אישור";
+  }
+  if (kind === "unresponsive") {
+    return "לא מגיב";
+  }
+  if (kind === "stale_youth") {
+    return "נער בלי עדכון";
+  }
+  return "תור";
+}
+
+function contactHealthRows(
+  dashboard: DashboardData,
+  unresponsiveContacts: Contact[],
+  staleYouths: Youth[],
+  nowMs: number,
+) {
+  const unresponsiveIds = new Set(unresponsiveContacts.map((contact) => contact.id));
+  const staleByContact = staleYouths.reduce<Record<string, number>>((acc, youth) => {
+    acc[youth.contactId] = (acc[youth.contactId] || 0) + 1;
+    return acc;
+  }, {});
+
+  return dashboard.contacts
+    .map((contact) => {
+      const messages = dashboard.messages.filter(
+        (message) => message.contactId === contact.id,
+      );
+      const inboundCount = messages.filter(
+        (message) => message.direction === "inbound",
+      ).length;
+      const staleCount = staleByContact[contact.id] || 0;
+      const days = daysSince(contact.lastContactedAt || contact.createdAt, nowMs);
+      const score = clampPercent(
+        contact.warmthScore +
+          inboundCount * 4 -
+          days * 0.8 -
+          staleCount * 9 -
+          (unresponsiveIds.has(contact.id) ? 25 : 0) -
+          (contact.status === "paused" ? 20 : 0) -
+          (contact.status === "needs_attention" ? 12 : 0),
+      );
+      const reason = [
+        `${inboundCount} תגובות`,
+        `${staleCount} נערים בלי עדכון`,
+        `קשר אחרון לפני ${days} ימים`,
+      ].join(" · ");
+
+      return { contact, score, reason };
+    })
+    .sort((a, b) => a.score - b.score);
+}
+
+function reviewStatusLabel(status: ReviewItem["status"]) {
+  if (status === "pending") {
+    return "ממתין";
+  }
+  if (status === "approved") {
+    return "אושר";
+  }
+  if (status === "rejected") {
+    return "נדחה";
+  }
+  return "נשלח";
+}
+
+function youthProgressPercent(stage: Youth["stage"]) {
+  const order: Youth["stage"][] = [
+    "new",
+    "warming",
+    "learning",
+    "mitzvah",
+    "needs_followup",
+  ];
+  const index = order.indexOf(stage);
+  if (index < 0) {
+    return 0;
+  }
+
+  return Math.round(((index + 1) / order.length) * 100);
+}
+
+function addMinutesIso(minutesToAdd: number) {
+  return new Date(Date.now() + minutesToAdd * 60000).toISOString();
+}
+
+function tomorrowAtIso(time: string) {
+  const date = new Date();
+  const [hours, minutes] = time.split(":").map(Number);
+  date.setDate(date.getDate() + 1);
+  date.setHours(hours || 9, minutes || 0, 0, 0);
+  return date.toISOString();
+}
+
+function isToday(value: string | null | undefined, nowMs: number) {
+  if (!value) {
+    return false;
+  }
+
+  const date = new Date(value);
+  const now = new Date(nowMs);
+  return (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  );
+}
+
+function isWithinDays(value: string | null | undefined, nowMs: number, days: number) {
+  if (!value) {
+    return false;
+  }
+
+  const dateMs = new Date(value).getTime();
+  if (Number.isNaN(dateMs)) {
+    return false;
+  }
+
+  return nowMs - dateMs <= days * 86400000;
+}
+
+function dataQualityScore(dashboard: DashboardData) {
+  const contactChecks = dashboard.contacts.flatMap((contact) => [
+    Boolean(contact.phone),
+    Boolean(contact.timezone),
+    Boolean(contact.bestContactTime),
+    Boolean(contact.notes || contact.responseStyle),
+  ]);
+  const youthChecks = dashboard.youths.flatMap((youth) => [
+    Boolean(youth.contactId),
+    Boolean(youth.nextAction),
+    Boolean(youth.stage),
+    Boolean(youth.lastUpdateAt || youth.updatedAt),
+  ]);
+  const checks = [...contactChecks, ...youthChecks];
+  if (!checks.length) {
+    return 0;
+  }
+
+  return Math.round((checks.filter(Boolean).length / checks.length) * 100);
+}
+
+function clampPercent(value: number) {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function percent(value: number, total: number) {
+  if (total <= 0) {
+    return value > 0 ? 100 : 0;
+  }
+
+  return clampPercent((value / total) * 100);
+}
+
+function youthStageRows(youths: Youth[]): DistributionRowData[] {
+  const total = youths.length;
+  const tones: Record<Youth["stage"], DistributionRowData["tone"]> = {
+    new: "blue",
+    warming: "amber",
+    learning: "green",
+    mitzvah: "green",
+    needs_followup: "rose",
+  };
+
+  return (Object.keys(stageLabels) as Youth["stage"][])
+    .map((stage) => ({
+      label: stageLabels[stage],
+      value: youths.filter((youth) => youth.stage === stage).length,
+      total,
+      tone: tones[stage],
+    }))
+    .filter((row) => row.value > 0);
+}
+
+function contactStatusRows(contacts: Contact[]): DistributionRowData[] {
+  const total = contacts.length;
+  const tones: Record<Contact["status"], DistributionRowData["tone"]> = {
+    active: "green",
+    paused: "amber",
+    needs_attention: "rose",
+  };
+
+  return (Object.keys(statusLabels) as Contact["status"][])
+    .map((status) => ({
+      label: statusLabels[status],
+      value: contacts.filter((contact) => contact.status === status).length,
+      total,
+      tone: tones[status],
+    }))
+    .filter((row) => row.value > 0);
+}
+
+function reviewStatusRows(reviews: ReviewItem[]): DistributionRowData[] {
+  const total = reviews.length;
+  const labels: Record<ReviewItem["status"], string> = {
+    pending: "ממתין",
+    approved: "אושר",
+    rejected: "נדחה",
+    sent: "נשלח",
+  };
+  const tones: Record<ReviewItem["status"], DistributionRowData["tone"]> = {
+    pending: "amber",
+    approved: "blue",
+    rejected: "rose",
+    sent: "green",
+  };
+  const order: ReviewItem["status"][] = [
+    "pending",
+    "approved",
+    "sent",
+    "rejected",
+  ];
+
+  return order
+    .map((status) => ({
+      label: labels[status],
+      value: reviews.filter((review) => review.status === status).length,
+      total,
+      tone: tones[status],
+    }))
+    .filter((row) => row.value > 0);
+}
+
+function topCountryRows(contacts: Contact[]): DistributionRowData[] {
+  const total = contacts.length;
+  const counts = contacts.reduce<Record<string, number>>((acc, contact) => {
+    const label = contact.country.trim() || "לא ידוע";
+    acc[label] = (acc[label] || 0) + 1;
+    return acc;
+  }, {});
+
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 4)
+    .map(([label, value], index) => ({
+      label,
+      value,
+      total,
+      tone: (index === 0 ? "blue" : index === 1 ? "green" : "amber") as DistributionRowData["tone"],
+    }));
 }
 
 function formatDateTime(value?: string | null) {

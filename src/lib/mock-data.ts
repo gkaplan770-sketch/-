@@ -8,6 +8,7 @@ import type {
   ReviewItem,
   Youth,
 } from "@/lib/types";
+import { defaultOwnerCommandRoutes } from "@/lib/owner-command-routes";
 
 const now = new Date();
 
@@ -28,10 +29,20 @@ export const seedSettings: BotSettings = {
   isEnabled: true,
   automationLevel: "auto_with_review",
   dailyContactLimit: 2,
+  maxYouthsPerMessage: 2,
+  noResponseFollowupDays: 4,
+  staleYouthDays: 30,
+  sendWindowStart: "09:30",
+  sendWindowEnd: "20:30",
+  sendIntervalMinutes: 30,
   ownerWhatsapp: "+972500000000",
   tone: "חם, חסידי, מכבד, קצר ולא לוחץ",
   quietHoursStart: "21:30",
   quietHoursEnd: "09:00",
+  ownerCommandRoutes: defaultOwnerCommandRoutes.map((route) => ({
+    ...route,
+    triggers: [...route.triggers],
+  })),
   updatedAt: now.toISOString(),
 };
 

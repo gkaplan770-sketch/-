@@ -27,6 +27,7 @@ function getOpenAI() {
 export async function analyzeWithOpenAI(
   message: NormalizedWhatsappMessage,
   policy?: BotPolicy,
+  conversationContext = "",
 ): Promise<InboundAnalysis> {
   const client = getOpenAI();
   if (!client) {
@@ -110,10 +111,15 @@ export async function analyzeWithOpenAI(
             "Do not mention AI, bot, automation, CRM, dashboard, policy, system, assistant, or that a message was generated.",
             "Do not falsely claim a human is manually typing right now, and do not answer questions about whether this is automated.",
             "If the contact asks who is writing, whether this is a bot, whether this is AI, or anything about automation/identity, set policyDecision to escalate, leave suggestedReply empty, and explain that Mendy should answer personally.",
+            "Use recent conversation context to understand references such as yesterday, the previous answer, or a youth mentioned earlier.",
+            "Important: milestones and detectedYouthNames must describe only new facts from the incoming message. Do not repeat facts that appear only in the history.",
             "Return only valid JSON matching the schema.",
             policy
               ? `Policy:\n${JSON.stringify(policy, null, 2)}`
               : "No explicit policy was provided; use a conservative work-only policy.",
+            conversationContext
+              ? `Recent conversation and CRM context:\n${conversationContext}`
+              : "No recent conversation context was provided.",
           ].join("\n\n"),
         },
         {
