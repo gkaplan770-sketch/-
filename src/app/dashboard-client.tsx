@@ -490,7 +490,7 @@ export default function DashboardClient({
                   {dashboard.settings.isEnabled ? "פעיל עם ביקורת ומדיניות" : "כבוי"}
                 </h2>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-[#686158]">
-                  {dashboard.settings.dailyContactLimit} פניות ביום · כל {dashboard.settings.sendIntervalMinutes} דק׳ · שבת{" "}
+                  {dashboard.settings.dailyContactLimit} פניות ביום · Cron {dashboard.settings.dailyCronTime} · כל {dashboard.settings.sendIntervalMinutes} דק׳ · שבת{" "}
                   {dashboard.policy.avoidShabbat ? "חסומה" : "פתוחה"} · כל תשובה{" "}
                   {dashboard.policy.requireReviewForAllReplies ? "בביקורת" : "לפי אמון"}
                 </p>
@@ -2592,6 +2592,11 @@ function ManagerSettingsPanel({
           onChange={(value) => onChange({ ...settings, ownerWhatsapp: value })}
         />
         <TextInput
+          label="שעת Cron יומי"
+          value={settings.dailyCronTime}
+          onChange={(value) => onChange({ ...settings, dailyCronTime: value })}
+        />
+        <TextInput
           label="תחילת שעות שקט"
           value={settings.quietHoursStart}
           onChange={(value) => onChange({ ...settings, quietHoursStart: value })}
@@ -2611,9 +2616,12 @@ function ManagerSettingsPanel({
 
       <div className="mt-4 grid gap-2 sm:grid-cols-3">
         <Mini label="תור יומי" value={`${settings.dailyContactLimit} אנשי קשר`} />
-        <Mini label="חלון שליחה" value={`${settings.sendWindowStart}-${settings.sendWindowEnd}`} />
+        <Mini label="Cron יומי" value={settings.dailyCronTime} />
         <Mini label="קצב שליחה" value={`אחת כל ${settings.sendIntervalMinutes} דקות`} />
       </div>
+      <p className="mt-3 text-xs leading-5 text-[#6f675e]">
+        ב־Vercel Hobby השעה האוטומטית בפועל נקבעת ב־vercel.json ודורשת פריסה מחדש. להפעלה נוספת בכל רגע כתוב בוואטסאפ: הפעל הרצה יומית.
+      </p>
     </Panel>
   );
 }

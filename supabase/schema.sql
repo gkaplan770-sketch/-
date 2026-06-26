@@ -12,6 +12,7 @@ create table if not exists bot_settings (
   send_window_start text not null default '09:30',
   send_window_end text not null default '20:30',
   send_interval_minutes integer not null default 30 check (send_interval_minutes between 30 and 240),
+  daily_cron_time text not null default '01:00',
   owner_whatsapp text not null default '',
   tone text not null default 'חם, חסידי, מכבד, קצר ולא לוחץ',
   quiet_hours_start text not null default '21:30',
@@ -167,6 +168,7 @@ alter table bot_settings add column if not exists stale_youth_days integer not n
 alter table bot_settings add column if not exists send_window_start text not null default '09:30';
 alter table bot_settings add column if not exists send_window_end text not null default '20:30';
 alter table bot_settings add column if not exists send_interval_minutes integer not null default 30 check (send_interval_minutes between 30 and 240);
+alter table bot_settings add column if not exists daily_cron_time text not null default '01:00';
 alter table bot_settings add column if not exists owner_command_routes jsonb not null default '[]'::jsonb;
 
 insert into bot_settings (id)

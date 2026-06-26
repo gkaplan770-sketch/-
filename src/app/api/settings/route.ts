@@ -22,6 +22,7 @@ const settingsSchema = z.object({
   sendWindowStart: z.string(),
   sendWindowEnd: z.string(),
   sendIntervalMinutes: z.number().int().min(30).max(240),
+  dailyCronTime: z.string(),
   ownerWhatsapp: z.string(),
   tone: z.string(),
   quietHoursStart: z.string(),

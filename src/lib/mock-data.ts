@@ -35,6 +35,7 @@ export const seedSettings: BotSettings = {
   sendWindowStart: "09:30",
   sendWindowEnd: "20:30",
   sendIntervalMinutes: 30,
+  dailyCronTime: "01:00",
   ownerWhatsapp: "+972500000000",
   tone: "חם, חסידי, מכבד, קצר ולא לוחץ",
   quietHoursStart: "21:30",

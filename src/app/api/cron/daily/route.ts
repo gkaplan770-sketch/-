@@ -1,10 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireCronSecret } from "@/lib/api-guard";
-import {
-  createDailyReviewQueue,
-  dispatchScheduledOutbound,
-  sendOwnerReportToWhatsapp,
-} from "@/lib/bot-engine";
+import { runDailyAutomation } from "@/lib/bot-engine";
 
 async function run(request: Request) {
   const guard = requireCronSecret(request);
@@ -12,15 +8,7 @@ async function run(request: Request) {
     return guard;
   }
 
-  const reviews = await createDailyReviewQueue();
-  const dispatch = await dispatchScheduledOutbound();
-  const report = await sendOwnerReportToWhatsapp();
-
-  return NextResponse.json({
-    createdReviews: reviews.length,
-    dispatch,
-    report,
-  });
+  return NextResponse.json(await runDailyAutomation());
 }
 
 export async function GET(request: Request) {

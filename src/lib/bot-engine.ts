@@ -265,6 +265,18 @@ export async function dispatchScheduledOutbound(now = new Date()) {
   };
 }
 
+export async function runDailyAutomation() {
+  const reviews = await createDailyReviewQueue();
+  const dispatch = await dispatchScheduledOutbound();
+  const report = await sendOwnerReportToWhatsapp();
+
+  return {
+    createdReviews: reviews.length,
+    dispatch,
+    report,
+  };
+}
+
 async function sendReviewToContact(review: ReviewItem, contact: Contact) {
   const sent = await sendWhatsappMessage({
     to: contact.phone,
@@ -549,6 +561,24 @@ export async function handleOwnerCommand(command: string) {
   }
 
   if (
+    ownerCommandMatches(dashboard.settings, normalized, "run_daily_now", [
+      "הפעל הרצה יומית",
+      "הרצה יומית עכשיו",
+      "הפעל עכשיו",
+    ])
+  ) {
+    const result = await runDailyAutomation();
+    return [
+      "הפעלתי עכשיו הרצה יומית.",
+      `טיוטות חדשות: ${result.createdReviews}`,
+      result.dispatch.sent
+        ? "שליחה מתוזמנת: נשלחה הודעה אחת."
+        : `שליחה מתוזמנת: ${result.dispatch.reason}`,
+      "דוח מנהל: נבדק ונשלח אם חלון השליחה מאפשר.",
+    ].join("\n");
+  }
+
+  if (
     ownerCommandMatches(dashboard.settings, normalized, "stop_bot", [
       "עצור",
       "הפסק",
@@ -791,6 +821,7 @@ function ownerStatus(dashboard: DashboardData) {
     `טיוטות: ${pending}`,
     `מענה אישי: ${alerts}`,
     `חלון שליחה: ${dashboard.settings.sendWindowStart}-${dashboard.settings.sendWindowEnd}`,
+    `Cron יומי: ${dashboard.settings.dailyCronTime}`,
     `מרווח: ${dashboard.settings.sendIntervalMinutes} דקות`,
   ].join("\n");
 }
@@ -975,6 +1006,34 @@ async function applyOwnerSettingsCommand(
       sendIntervalMinutes: interval,
     });
     return `עודכן: הודעה אחת כל ${settings.sendIntervalMinutes} דקות לפחות.`;
+  }
+
+  const dailyCronTime = ownerCommandPayload(
+    dashboard.settings,
+    normalized,
+    "set_daily_cron_time",
+    ["שעת הרצה", "שעת קרון", "שעת cron"],
+  );
+  if (dailyCronTime && /^\d{1,2}:\d{2}$/.test(dailyCronTime)) {
+    const settings = await updateBotSettings({
+      ...dashboard.settings,
+      dailyCronTime: normalizeClock(dailyCronTime),
+    });
+    return [
+      `עודכן במערכת: שעת ההרצה היומית הרצויה היא ${settings.dailyCronTime}.`,
+      "ב־Vercel Hobby השעה האוטומטית בפועל נקבעת ב־vercel.json ודורשת פריסה מחדש.",
+      "להרצה נוספת בכל רגע כתוב: הפעל הרצה יומית",
+    ].join("\n");
+  }
+
+  if (
+    ownerCommandMatches(dashboard.settings, normalized, "set_daily_cron_time", [
+      "שעת הרצה",
+      "שעת קרון",
+      "שעת cron",
+    ])
+  ) {
+    return "כתוב כך: שעת הרצה 01:00";
   }
 
   const sendWindow = ownerCommandTimeRange(

@@ -93,6 +93,7 @@ function memoryStore() {
   store.settings.sendWindowStart ||= seedSettings.sendWindowStart;
   store.settings.sendWindowEnd ||= seedSettings.sendWindowEnd;
   store.settings.sendIntervalMinutes ||= seedSettings.sendIntervalMinutes;
+  store.settings.dailyCronTime ||= seedSettings.dailyCronTime;
   store.settings.ownerCommandRoutes = mergeOwnerCommandRoutes(
     store.settings.ownerCommandRoutes,
   );
@@ -425,6 +426,7 @@ export async function setBotEnabled(isEnabled: boolean) {
       send_window_start: currentSettings.sendWindowStart,
       send_window_end: currentSettings.sendWindowEnd,
       send_interval_minutes: currentSettings.sendIntervalMinutes,
+      daily_cron_time: currentSettings.dailyCronTime,
       owner_whatsapp: currentSettings.ownerWhatsapp,
       tone: currentSettings.tone,
       quiet_hours_start: currentSettings.quietHoursStart,
@@ -453,6 +455,7 @@ export async function updateBotSettings(input: BotSettings) {
     sendWindowStart: normalizeTime(input.sendWindowStart, seedSettings.sendWindowStart),
     sendWindowEnd: normalizeTime(input.sendWindowEnd, seedSettings.sendWindowEnd),
     sendIntervalMinutes: clamp(input.sendIntervalMinutes, 30, 240),
+    dailyCronTime: normalizeTime(input.dailyCronTime, seedSettings.dailyCronTime),
     ownerCommandRoutes: mergeOwnerCommandRoutes(input.ownerCommandRoutes),
     updatedAt,
   };
@@ -472,6 +475,7 @@ export async function updateBotSettings(input: BotSettings) {
       send_window_start: settings.sendWindowStart,
       send_window_end: settings.sendWindowEnd,
       send_interval_minutes: settings.sendIntervalMinutes,
+      daily_cron_time: settings.dailyCronTime,
       owner_whatsapp: settings.ownerWhatsapp,
       tone: settings.tone,
       quiet_hours_start: settings.quietHoursStart,
@@ -1526,6 +1530,7 @@ function mapSettings(row: Record<string, unknown> | null): BotSettings {
     sendIntervalMinutes: Number(
       row.send_interval_minutes || seedSettings.sendIntervalMinutes,
     ),
+    dailyCronTime: String(row.daily_cron_time || seedSettings.dailyCronTime),
     ownerWhatsapp: String(row.owner_whatsapp || ""),
     tone: String(row.tone || seedSettings.tone),
     quietHoursStart: String(row.quiet_hours_start || "21:30"),

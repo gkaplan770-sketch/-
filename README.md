@@ -58,8 +58,8 @@ GNAPI_TYPING_MS_PER_CHAR=35
 - WhatsApp webhook: `POST /api/whatsapp/webhook`
 - בדיקת webhook: `GET /api/whatsapp/webhook?challenge=...&token=...`
 - Cron יומי: `POST /api/cron/daily` או `GET /api/cron/daily` עם header `x-cron-secret: CRON_SECRET` או `Authorization: Bearer CRON_SECRET`
-- Cron שליחה מתוזמנת: `POST /api/cron/dispatch` או `GET /api/cron/dispatch` כל 30 דקות עם `x-cron-secret: CRON_SECRET` או `Authorization: Bearer CRON_SECRET`
-- אם פורסים ל־Vercel, `vercel.json` כבר מגדיר קרון יומי וקרון שליחה כל 30 דקות.
+- Cron שליחה מתוזמנת ידני: `POST /api/cron/dispatch` או `GET /api/cron/dispatch` עם `x-cron-secret: CRON_SECRET` או `Authorization: Bearer CRON_SECRET`
+- ב־Vercel Hobby, `vercel.json` מגדיר Cron אחד בלבד: `/api/cron/daily` פעם ביום ב־`01:00` (`0 1 * * *`). הדיוק בתוכנית החינמית הוא ברמת שעה. להרצה נוספת בכל רגע משתמשים בפקודת WhatsApp: `הפעל הרצה יומית`.
 - סטטוס התקנה: `GET /api/system/status`
 
 ## פקודות מנהל ב־WhatsApp
@@ -72,12 +72,12 @@ GNAPI_TYPING_MS_PER_CHAR=35
 - `טיוטות`, `שלח 1`, `דחה 1 מחר`, `דחה 1 חצי שעה`, `ערוך 1: טקסט חדש`
 - `התראות`, `טפל התראה 1`
 - `מי לא מגיב`, `נערים בלי עדכון`, `למה לא נשלח`
-- `כמה ביום 4`, `שעות שליחה 09:30-20:30`, `מרווח שליחה 30`
+- `כמה ביום 4`, `שעות שליחה 09:30-20:30`, `מרווח שליחה 30`, `שעת הרצה 01:00`
 - `טיוטות בלבד`, `אוטומטי עם אישור`, `אוטומטי מלא`
 - `שבת חסום`, `חגים חסום`, `שעות שקט 21:30-09:00`
 - `חפש משה`, `כרטיס משה`, `עדכן דוד: התחיל שיעור`, `פעולה הבאה לדוד: לשאול על תפילין`
 - `השהה משה`, `הפעל משה`, `סמן משה צריך תשומת לב`
-- `עצור`, `הפעל`, `עצור להיום`
+- `הפעל הרצה יומית`, `עצור`, `הפעל`, `עצור להיום`
 
 ## מה בנוי
 

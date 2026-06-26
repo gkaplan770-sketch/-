@@ -100,6 +100,13 @@ export const defaultOwnerCommandRoutes: OwnerCommandRoute[] = [
     enabled: true,
   },
   {
+    id: "run_daily_now",
+    label: "הרצה יומית עכשיו",
+    destination: "WhatsApp -> יצירת תור, שליחה מותרת ודוח מנהל",
+    triggers: ["הפעל הרצה יומית", "הרצה יומית עכשיו", "הפעל עכשיו"],
+    enabled: true,
+  },
+  {
     id: "stop_today",
     label: "עצור להיום",
     destination: "תור ביקורות -> דחייה למחר",
@@ -146,6 +153,13 @@ export const defaultOwnerCommandRoutes: OwnerCommandRoute[] = [
     label: "שעות שליחה",
     destination: "הגדרות שליחה -> חלון שליחה",
     triggers: ["שעות שליחה"],
+    enabled: true,
+  },
+  {
+    id: "set_daily_cron_time",
+    label: "שעת Cron יומי",
+    destination: "הגדרות מנהל -> שעת הרצה יומית",
+    triggers: ["שעת הרצה", "שעת קרון", "שעת cron"],
     enabled: true,
   },
   {

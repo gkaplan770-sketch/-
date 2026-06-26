@@ -19,6 +19,7 @@ export type BotSettings = {
   sendWindowStart: string;
   sendWindowEnd: string;
   sendIntervalMinutes: number;
+  dailyCronTime: string;
   ownerWhatsapp: string;
   tone: string;
   quietHoursStart: string;
