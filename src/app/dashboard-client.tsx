@@ -8,6 +8,7 @@ import {
   Brain,
   CalendarDays,
   CheckCircle2,
+  CircleHelp,
   ClipboardCheck,
   Database,
   Download,
@@ -164,6 +165,7 @@ export default function DashboardClient({
   const [weeklyReport, setWeeklyReport] = useState<WeeklyReport | null>(null);
   const [command, setCommand] = useState("");
   const [commandReply, setCommandReply] = useState("");
+  const [assistantNotice, setAssistantNotice] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -264,7 +266,10 @@ export default function DashboardClient({
 
   async function runDailyQueue() {
     setBusy("daily");
-    await fetch("/api/cron/daily", { method: "POST" });
+    const data = await postJson<{ reply: string }>("/api/owner-command", {
+      command: "הפעל הרצה יומית",
+    });
+    setAssistantNotice(data.reply);
     await refresh();
     setBusy(null);
   }
@@ -283,12 +288,46 @@ export default function DashboardClient({
     setBusy("settings");
     await postJson("/api/settings", {
       ...settingsDraft,
+      dailyContactLimit: 1,
+      maxYouthsPerMessage: Number(settingsDraft.maxYouthsPerMessage),
+      noResponseFollowupDays: Number(settingsDraft.noResponseFollowupDays),
+      staleYouthDays: Number(settingsDraft.staleYouthDays),
+      sendIntervalMinutes: Number(settingsDraft.sendIntervalMinutes),
+    });
+    await refresh();
+    setBusy(null);
+  }
+
+  async function saveClientBasics() {
+    setBusy("client-basics");
+    await postJson("/api/settings", {
+      ...settingsDraft,
       dailyContactLimit: Number(settingsDraft.dailyContactLimit),
       maxYouthsPerMessage: Number(settingsDraft.maxYouthsPerMessage),
       noResponseFollowupDays: Number(settingsDraft.noResponseFollowupDays),
       staleYouthDays: Number(settingsDraft.staleYouthDays),
       sendIntervalMinutes: Number(settingsDraft.sendIntervalMinutes),
     });
+    await postJson("/api/policy", {
+      ...policyDraft,
+      maxAutoReplyLength: Number(policyDraft.maxAutoReplyLength),
+    });
+    await refresh();
+    setAssistantNotice("ההגדרה הבסיסית נשמרה.");
+    setBusy(null);
+  }
+
+  async function startConversationNow(contactId: string) {
+    const contact = dashboard.contacts.find((item) => item.id === contactId);
+    if (!contact) {
+      return;
+    }
+
+    setBusy("start-conversation");
+    const data = await postJson<{ reply: string }>("/api/owner-command", {
+      command: `התחל שיחה עם ${contact.name}`,
+    });
+    setAssistantNotice(data.reply);
     await refresh();
     setBusy(null);
   }
@@ -479,6 +518,36 @@ export default function DashboardClient({
         <ManagerSideNav dashboard={dashboard} />
 
         <div className="min-w-0">
+        <section id="home" className="scroll-mt-6">
+          <ClientAssistantHome
+            dashboard={dashboard}
+            settings={settingsDraft}
+            policy={policyDraft}
+            dueContacts={dueContacts}
+            staleYouths={staleYouths}
+            unresponsiveContacts={unresponsiveContacts}
+            busy={busy}
+            notice={assistantNotice}
+            onSettingsChange={setSettingsDraft}
+            onPolicyChange={setPolicyDraft}
+            onSaveBasics={saveClientBasics}
+            onStartConversation={startConversationNow}
+          />
+        </section>
+
+        <section id="advanced" className="mt-5 scroll-mt-6">
+          <div className="rounded-lg border border-dashed border-[#d8d0c4] bg-white/70 p-4">
+            <div className="flex flex-wrap items-center gap-2 text-sm font-bold text-[#4e4841]">
+              <SlidersHorizontal className="h-4 w-4" />
+              אזור מתקדם
+              <HelpTip text="כל מה שמתחת כאן נשאר זמין למנהל שרוצה שליטה עמוקה יותר: ביקורות, דוחות, מדיניות, פקודות, ייבוא וייצוא." />
+            </div>
+            <p className="mt-2 text-sm leading-6 text-[#6f675e]">
+              הלקוח יכול לעבוד כמעט רק מהמסך העליון ומהוואטסאפ. הכלים המתקדמים נמצאים כאן למעקב, תיקון ידני ובדיקות.
+            </p>
+          </div>
+        </section>
+
         <section id="today" className="scroll-mt-6 grid gap-4 lg:grid-cols-[1.35fr_0.9fr]">
           <Panel>
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -502,6 +571,7 @@ export default function DashboardClient({
               >
                 <CalendarDays className="h-4 w-4" />
                 פתח תור יומי
+                <HelpTip text="מפעיל עכשיו את אותה פעולה שה־Cron היומי עושה: הכנת פנייה יומית, שליחה מותרת ודוח מנהל." light />
               </button>
             </div>
             <div className="mt-5 grid gap-3 sm:grid-cols-4">
@@ -775,17 +845,57 @@ function ControlMetric({
   );
 }
 
+function SimpleMetric({
+  label,
+  value,
+  help,
+}: {
+  label: string;
+  value: string | number;
+  help: string;
+}) {
+  return (
+    <div className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-3">
+      <div className="flex items-center gap-2 text-xs font-bold text-[#6f675e]">
+        {label}
+        <HelpTip text={help} />
+      </div>
+      <div className="mt-2 text-xl font-bold">{value}</div>
+    </div>
+  );
+}
+
+function PriorityLine({
+  title,
+  value,
+  help,
+}: {
+  title: string;
+  value: number;
+  help: string;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-3">
+      <div className="flex items-center gap-2 text-sm font-bold">
+        {title}
+        <HelpTip text={help} />
+      </div>
+      <Badge tone={value ? "amber" : "neutral"}>{value}</Badge>
+    </div>
+  );
+}
+
 function ManagerSideNav({ dashboard }: { dashboard: DashboardData }) {
   const pending = dashboard.reviews.filter((review) => review.status === "pending").length;
   const alerts = dashboard.alerts.filter((alert) => alert.status === "open").length;
   const navItems = [
+    { href: "#home", label: "בית", icon: <HeartHandshake className="h-4 w-4" />, count: null },
     { href: "#today", label: "היום", icon: <Activity className="h-4 w-4" />, count: dashboard.stats.dueContacts },
-    { href: "#command", label: "חדר מצב", icon: <Database className="h-4 w-4" />, count: dashboard.stats.openOwnerAlerts },
-    { href: "#work", label: "עבודה", icon: <ClipboardCheck className="h-4 w-4" />, count: pending + alerts },
     { href: "#contacts", label: "קשרים", icon: <Users className="h-4 w-4" />, count: dashboard.contacts.length },
-    { href: "#reviews", label: "אישורים", icon: <Send className="h-4 w-4" />, count: pending },
     { href: "#reports", label: "דוחות", icon: <FileText className="h-4 w-4" />, count: dashboard.reports.length },
     { href: "#settings", label: "הגדרות", icon: <Settings className="h-4 w-4" />, count: null },
+    { href: "#advanced", label: "מתקדם", icon: <Database className="h-4 w-4" />, count: pending + alerts },
+    { href: "#reviews", label: "אישורים", icon: <Send className="h-4 w-4" />, count: pending },
     { href: "#command-routes", label: "פקודות", icon: <SlidersHorizontal className="h-4 w-4" />, count: dashboard.settings.ownerCommandRoutes.length },
     { href: "#whatsapp", label: "וואטסאפ", icon: <MessageCircle className="h-4 w-4" />, count: null },
   ];
@@ -817,6 +927,223 @@ function ManagerSideNav({ dashboard }: { dashboard: DashboardData }) {
         </div>
       </nav>
     </aside>
+  );
+}
+
+function ClientAssistantHome({
+  dashboard,
+  settings,
+  policy,
+  dueContacts,
+  staleYouths,
+  unresponsiveContacts,
+  busy,
+  notice,
+  onSettingsChange,
+  onPolicyChange,
+  onSaveBasics,
+  onStartConversation,
+}: {
+  dashboard: DashboardData;
+  settings: BotSettings;
+  policy: BotPolicy;
+  dueContacts: Contact[];
+  staleYouths: Youth[];
+  unresponsiveContacts: Contact[];
+  busy: string | null;
+  notice: string;
+  onSettingsChange: (settings: BotSettings) => void;
+  onPolicyChange: (policy: BotPolicy) => void;
+  onSaveBasics: () => void;
+  onStartConversation: (contactId: string) => void;
+}) {
+  const defaultContactId = dueContacts[0]?.id || dashboard.contacts[0]?.id || "";
+  const [contactId, setContactId] = useState(defaultContactId);
+  const selectedContact =
+    dashboard.contacts.find((contact) => contact.id === contactId) ||
+    dueContacts[0] ||
+    dashboard.contacts[0];
+  const selectedYouths = selectedContact
+    ? dashboard.youths.filter((youth) => youth.contactId === selectedContact.id)
+    : [];
+  const inboundToday = dashboard.messages.filter(
+    (message) =>
+      message.direction === "inbound" &&
+      isSameDay(message.createdAt, new Date().toISOString()),
+  ).length;
+  const mitzvahUpdatesThisMonth =
+    dashboard.stats.britMilestonesThisMonth +
+    dashboard.stats.tefillinMilestonesThisMonth;
+
+  return (
+    <div className="grid gap-5">
+      <Panel>
+        <div className="grid gap-5 lg:grid-cols-[1.15fr_0.85fr]">
+          <div>
+            <PanelEyebrow icon={<HeartHandshake className="h-4 w-4" />}>
+              המזכיר האישי של הוואטסאפ
+            </PanelEyebrow>
+            <h2 className="mt-3 max-w-3xl text-3xl font-bold leading-tight">
+              כל יום המערכת פונה לאיש קשר אחד, מבינה את התשובות ומעדכנת את המעקב.
+            </h2>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-[#6f675e]">
+              זה המסך שהלקוח אמור לחיות בו. כל השאר נשאר למטה למקרים שצריך בקרה, תיקון או הגדרה מתקדמת.
+            </p>
+            <div className="mt-5 grid gap-3 sm:grid-cols-4">
+              <SimpleMetric label="איש קשר היום" value={dueContacts[0]?.name || "אין בתור"} help="זה האיש שהמערכת תנסה לפנות אליו בהרצה היומית הקרובה." />
+              <SimpleMetric label="תשובות היום" value={inboundToday} help="כמה הודעות נכנסות התקבלו היום מאנשי קשר שמופיעים במערכת." />
+              <SimpleMetric label="דורשים יחס" value={dashboard.stats.openOwnerAlerts} help="שיחות שהמערכת החליטה שלא נכון לענות עליהן לבד וצריך שהמנהל יראה." />
+              <SimpleMetric label="מצוות החודש" value={mitzvahUpdatesThisMonth} help="עדכוני ברית ותפילין שנשמרו החודש מתוך תשובות אנשי הקשר." />
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-4">
+            <div className="flex items-center gap-2 text-sm font-bold">
+              פעולה מהירה
+              <HelpTip text="כאן המנהל יכול להתחיל שיחה מיד עם איש קשר, בלי לחכות להרצה היומית של מחר." />
+            </div>
+            <label className="mt-3 block">
+              <span className="flex items-center gap-2 text-xs font-bold text-[#6f675e]">
+                עם מי להתחיל שיחה
+                <HelpTip text="בחר איש קשר קיים. המערכת תנסח הודעת פתיחה לפי הנערים שלו והנתונים שחסרים." />
+              </span>
+              <select
+                value={selectedContact?.id || ""}
+                onChange={(event) => setContactId(event.target.value)}
+                className="mt-1 h-10 w-full rounded-lg border border-[#d8d0c4] bg-white px-3 text-sm outline-none focus:border-[#1f7a5a]"
+              >
+                {dashboard.contacts.map((contact) => (
+                  <option key={contact.id} value={contact.id}>
+                    {contact.name} · {dashboard.youths.filter((youth) => youth.contactId === contact.id).length} נערים
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <Mini label="נערים אצל איש הקשר" value={String(selectedYouths.length)} />
+              <Mini label="מותר אוטומטי" value={selectedContact?.allowAutoSend ? "כן" : "ידני"} />
+            </div>
+            <div className="mt-4">
+              <ActionButton
+                busy={busy === "start-conversation"}
+                tone="green"
+                onClick={() => selectedContact && onStartConversation(selectedContact.id)}
+                icon={<Send className="h-4 w-4" />}
+                help="שולח עכשיו הודעת פתיחה אם מותר לשלוח לפי שבת, חג ושעות השליחה. אם אסור, נוצרת טיוטה לביקורת."
+              >
+                התחל שיחה עכשיו
+              </ActionButton>
+            </div>
+            {notice ? (
+              <div className="mt-3 rounded-lg border border-[#d8d0c4] bg-white p-3 text-sm leading-6 text-[#4e4841]">
+                {notice}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </Panel>
+
+      <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
+        <Panel>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <PanelEyebrow icon={<Settings className="h-4 w-4" />}>
+              הגדרה בסיסית ללקוח
+            </PanelEyebrow>
+            <ActionButton
+              busy={busy === "client-basics"}
+              tone="blue"
+              onClick={onSaveBasics}
+              icon={<Save className="h-4 w-4" />}
+              help="שומר את הפרטים שהבוט צריך כדי לכתוב כמו המנהל ולעבוד לפי קצב פשוט."
+            >
+              שמור הגדרה
+            </ActionButton>
+          </div>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <TextInput
+              label="שם הפרויקט"
+              value={settings.projectName}
+              onChange={(value) => onSettingsChange({ ...settings, projectName: value })}
+              help="השם שיופיע בהקשר של השאלות, למשל מעקב נערים או פרויקט שליחות."
+            />
+            <TextInput
+              label="איך קוראים למנהל"
+              value={settings.managerDisplayName}
+              onChange={(value) =>
+                onSettingsChange({ ...settings, managerDisplayName: value })
+              }
+              help="שם פרטי או כינוי שההודעה יכולה להסתיים בו כדי להישמע אישית."
+            />
+            <NumberInput
+              label="כמה אנשי קשר ביום"
+              value={1}
+              min={1}
+              max={1}
+              onChange={() => onSettingsChange({ ...settings, dailyContactLimit: 1 })}
+              help="ברירת המחדל המומלצת היא 1 כדי לשמור על וואטסאפ רגוע. המנהל יכול להתחיל עוד שיחות ידנית."
+            />
+            <TextInput
+              label="שעות שמותר לשלוח"
+              value={`${settings.sendWindowStart}-${settings.sendWindowEnd}`}
+              onChange={(value) => {
+                const [start, end] = value.split("-").map((part) => part.trim());
+                onSettingsChange({
+                  ...settings,
+                  sendWindowStart: start || settings.sendWindowStart,
+                  sendWindowEnd: end || settings.sendWindowEnd,
+                });
+              }}
+              help="טווח השעות שבו מותר למערכת לשלוח הודעות יזומות. למשל 09:30-20:30."
+            />
+            <TextareaInput
+              label="מה חשוב לשאול"
+              value={settings.followupQuestionGuide}
+              onChange={(value) =>
+                onSettingsChange({ ...settings, followupQuestionGuide: value })
+              }
+              rows={3}
+              wide
+              help="כאן הלקוח כותב במילים פשוטות איזה עדכונים חשוב לו לקבל: ברית, תפילין, שבת, שיעור, חתונה וכו׳."
+            />
+            <TextareaInput
+              label="איך המערכת צריכה להזדהות"
+              value={policy.botIdentity}
+              onChange={(value) => onPolicyChange({ ...policy, botIdentity: value })}
+              rows={3}
+              wide
+              help="הסבר פנימי לבוט: בשם מי הוא כותב, איזה סגנון לשמור, ומה אסור לחשוף לאנשי הקשר."
+            />
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelEyebrow icon={<ClipboardCheck className="h-4 w-4" />}>
+            מה דורש תשומת לב
+          </PanelEyebrow>
+          <div className="mt-4 grid gap-3">
+            <PriorityLine
+              title="לא ענו אחרי פנייה"
+              value={unresponsiveContacts.length}
+              help="אנשי קשר שקיבלו הודעה ולא חזרו בזמן שהוגדר."
+            />
+            <PriorityLine
+              title="נערים בלי עדכון"
+              value={staleYouths.length}
+              help="נערים שלא קיבלו עדכון חדש מספיק זמן."
+            />
+            <PriorityLine
+              title="טיוטות שממתינות"
+              value={dashboard.stats.pendingReviews}
+              help="הודעות שהמערכת הכינה אבל עדיין לא נשלחו או אושרו."
+            />
+          </div>
+          <div className="mt-4 rounded-lg border border-[#e5ded2] bg-[#fbfaf7] p-3 text-sm leading-6 text-[#6f675e]">
+            דרך וואטסאפ המנהל יכול לשאול: כמה נערים יש לחיים, מי עשה ברית החודש, מי לא ענה השבוע, או לכתוב: התחל שיחה עם חיים.
+          </div>
+        </Panel>
+      </div>
+    </div>
   );
 }
 
@@ -3432,15 +3759,20 @@ function TextInput({
   value,
   onChange,
   wide,
+  help,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   wide?: boolean;
+  help?: string;
 }) {
   return (
     <label className={wide ? "sm:col-span-2" : ""}>
-      <span className="text-xs font-bold text-[#6f675e]">{label}</span>
+      <span className="flex items-center gap-2 text-xs font-bold text-[#6f675e]">
+        {label}
+        {help ? <HelpTip text={help} /> : null}
+      </span>
       <input value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 h-10 w-full rounded-lg border border-[#d8d0c4] bg-white px-3 text-sm outline-none focus:border-[#1f7a5a]" />
     </label>
   );
@@ -3452,16 +3784,21 @@ function NumberInput({
   onChange,
   min = 0,
   max = 365,
+  help,
 }: {
   label: string;
   value: number;
   onChange: (value: number) => void;
   min?: number;
   max?: number;
+  help?: string;
 }) {
   return (
     <label>
-      <span className="text-xs font-bold text-[#6f675e]">{label}</span>
+      <span className="flex items-center gap-2 text-xs font-bold text-[#6f675e]">
+        {label}
+        {help ? <HelpTip text={help} /> : null}
+      </span>
       <input type="number" min={min} max={max} value={value} onChange={(event) => onChange(Number(event.target.value))} className="mt-1 h-10 w-full rounded-lg border border-[#d8d0c4] bg-white px-3 text-sm outline-none focus:border-[#1f7a5a]" />
     </label>
   );
@@ -3472,15 +3809,20 @@ function SelectInput({
   value,
   options,
   onChange,
+  help,
 }: {
   label: string;
   value: string;
   options: { value: string; label: string }[];
   onChange: (value: string) => void;
+  help?: string;
 }) {
   return (
     <label>
-      <span className="text-xs font-bold text-[#6f675e]">{label}</span>
+      <span className="flex items-center gap-2 text-xs font-bold text-[#6f675e]">
+        {label}
+        {help ? <HelpTip text={help} /> : null}
+      </span>
       <select value={value} onChange={(event) => onChange(event.target.value)} className="mt-1 h-10 w-full rounded-lg border border-[#d8d0c4] bg-white px-3 text-sm outline-none focus:border-[#1f7a5a]">
         {options.map((option) => (
           <option key={option.value} value={option.value}>
@@ -3498,16 +3840,21 @@ function TextareaInput({
   onChange,
   rows = 4,
   wide,
+  help,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   rows?: number;
   wide?: boolean;
+  help?: string;
 }) {
   return (
     <label className={wide ? "sm:col-span-2" : ""}>
-      <span className="text-xs font-bold text-[#6f675e]">{label}</span>
+      <span className="flex items-center gap-2 text-xs font-bold text-[#6f675e]">
+        {label}
+        {help ? <HelpTip text={help} /> : null}
+      </span>
       <textarea value={value} rows={rows} onChange={(event) => onChange(event.target.value)} className="mt-1 w-full resize-y rounded-lg border border-[#d8d0c4] bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-[#1f7a5a]" />
     </label>
   );
@@ -3536,12 +3883,14 @@ function ActionButton({
   tone,
   busy,
   onClick,
+  help,
 }: {
   children: ReactNode;
   icon: ReactNode;
   tone: "blue" | "green" | "rose";
   busy?: boolean;
   onClick?: () => void;
+  help?: string;
 }) {
   const classes = {
     blue: "bg-[#203864] hover:bg-[#182b4d]",
@@ -3552,7 +3901,24 @@ function ActionButton({
     <button type={onClick ? "button" : "submit"} onClick={onClick} disabled={busy} className={`inline-flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-bold text-white transition disabled:opacity-60 ${classes[tone]}`}>
       {icon}
       {children}
+      {help ? <HelpTip text={help} light /> : null}
     </button>
+  );
+}
+
+function HelpTip({ text, light }: { text: string; light?: boolean }) {
+  return (
+    <span className="group relative inline-flex">
+      <CircleHelp
+        className={[
+          "h-4 w-4 shrink-0 cursor-help",
+          light ? "text-white/85" : "text-[#8a8176]",
+        ].join(" ")}
+      />
+      <span className="pointer-events-none absolute right-0 top-6 z-30 hidden w-64 rounded-lg border border-[#d8d0c4] bg-white p-3 text-right text-xs font-normal leading-5 text-[#4e4841] shadow-lg group-hover:block">
+        {text}
+      </span>
+    </span>
   );
 }
 
@@ -3576,6 +3942,16 @@ function PriorityBadge({ priority }: { priority: ReviewItem["priority"] }) {
     <Badge tone={priority === "high" ? "rose" : priority === "normal" ? "amber" : "neutral"}>
       {priority === "high" ? "גבוה" : priority === "normal" ? "רגיל" : "נמוך"}
     </Badge>
+  );
+}
+
+function isSameDay(value: string, compare: string) {
+  const first = new Date(value);
+  const second = new Date(compare);
+  return (
+    first.getFullYear() === second.getFullYear() &&
+    first.getMonth() === second.getMonth() &&
+    first.getDate() === second.getDate()
   );
 }
 

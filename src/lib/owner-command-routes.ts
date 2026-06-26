@@ -100,6 +100,13 @@ export const defaultOwnerCommandRoutes: OwnerCommandRoute[] = [
     enabled: true,
   },
   {
+    id: "start_contact_conversation",
+    label: "התחל שיחה עם איש קשר",
+    destination: "WhatsApp -> שליחת הודעת פתיחה לאיש קשר",
+    triggers: ["התחל שיחה עם", "תתחיל שיחה עם", "שלח עכשיו ל"],
+    enabled: true,
+  },
+  {
     id: "run_daily_now",
     label: "הרצה יומית עכשיו",
     destination: "WhatsApp -> יצירת תור, שליחה מותרת ודוח מנהל",

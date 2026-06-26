@@ -5,7 +5,7 @@ create table if not exists bot_settings (
   is_enabled boolean not null default true,
   automation_level text not null default 'auto_with_review'
     check (automation_level in ('drafts', 'auto_with_review', 'full_auto')),
-  daily_contact_limit integer not null default 2 check (daily_contact_limit between 1 and 10),
+  daily_contact_limit integer not null default 1 check (daily_contact_limit between 1 and 10),
   max_youths_per_message integer not null default 2 check (max_youths_per_message between 1 and 10),
   no_response_followup_days integer not null default 4 check (no_response_followup_days between 1 and 60),
   stale_youth_days integer not null default 30 check (stale_youth_days between 1 and 365),
@@ -13,6 +13,9 @@ create table if not exists bot_settings (
   send_window_end text not null default '20:30',
   send_interval_minutes integer not null default 30 check (send_interval_minutes between 30 and 240),
   daily_cron_time text not null default '01:00',
+  project_name text not null default 'מעקב נערים',
+  manager_display_name text not null default 'מנדי',
+  followup_question_guide text not null default 'ברית, תפילין, שבת, שיעור תורה, חתונה כיהודי וכל התקדמות חדשה אצל הנערים.',
   owner_whatsapp text not null default '',
   tone text not null default 'חם, חסידי, מכבד, קצר ולא לוחץ',
   quiet_hours_start text not null default '21:30',
@@ -162,6 +165,7 @@ alter table contacts add column if not exists allow_auto_send boolean not null d
 alter table review_items add column if not exists contact_name text not null default '';
 alter table owner_alerts add column if not exists contact_name text not null default '';
 
+alter table bot_settings alter column daily_contact_limit set default 1;
 alter table bot_settings add column if not exists max_youths_per_message integer not null default 2 check (max_youths_per_message between 1 and 10);
 alter table bot_settings add column if not exists no_response_followup_days integer not null default 4 check (no_response_followup_days between 1 and 60);
 alter table bot_settings add column if not exists stale_youth_days integer not null default 30 check (stale_youth_days between 1 and 365);
@@ -169,6 +173,9 @@ alter table bot_settings add column if not exists send_window_start text not nul
 alter table bot_settings add column if not exists send_window_end text not null default '20:30';
 alter table bot_settings add column if not exists send_interval_minutes integer not null default 30 check (send_interval_minutes between 30 and 240);
 alter table bot_settings add column if not exists daily_cron_time text not null default '01:00';
+alter table bot_settings add column if not exists project_name text not null default 'מעקב נערים';
+alter table bot_settings add column if not exists manager_display_name text not null default 'מנדי';
+alter table bot_settings add column if not exists followup_question_guide text not null default 'ברית, תפילין, שבת, שיעור תורה, חתונה כיהודי וכל התקדמות חדשה אצל הנערים.';
 alter table bot_settings add column if not exists owner_command_routes jsonb not null default '[]'::jsonb;
 
 insert into bot_settings (id)

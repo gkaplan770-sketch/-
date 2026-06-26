@@ -70,6 +70,9 @@ export function composeFollowUpMessage(
   const selectedYouths = youths.slice(0, settings.maxYouthsPerMessage);
   const names = selectedYouths.map((youth) => youth.name).join(" / ");
   const focus = names ? `בפרט על ${names}` : "על הנערים שאצלכם";
+  const project = settings.projectName?.trim();
+  const guide = settings.followupQuestionGuide?.trim();
+  const managerName = settings.managerDisplayName?.trim();
   const nextActions = selectedYouths
     .map((youth) => youth.nextAction)
     .filter(Boolean)
@@ -78,9 +81,12 @@ export function composeFollowUpMessage(
 
   const message = [
     `שלום וברכה ${contact.name}, מה שלומכם?`,
-    `רציתי לשאול בעדינות אם יש עדכון טוב ${focus}.`,
-    "האם היה משהו חדש בענייני יהדות, תפילין, שבת, שיעור, ברית או קשר נוסף?",
+    `רציתי לשאול בעדינות אם יש עדכון טוב ${focus}${project ? ` במסגרת ${project}` : ""}.`,
+    guide
+      ? `בעיקר חשוב לי לדעת: ${guide}`
+      : "האם היה משהו חדש בענייני יהדות, תפילין, שבת, שיעור, ברית או קשר נוסף?",
     nextActions ? `אם מתאים, אשמח לשמוע גם: ${nextActions}` : "",
+    managerName ? `תודה, ${managerName}` : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -160,6 +166,70 @@ export async function approveAndSendReview(id: string) {
   await addSystemMessage(`נשלחה הודעה אל ${contact.name}.`);
 
   return sentReview;
+}
+
+export async function startConversationWithContact(query: string) {
+  const dashboard = await getDashboardData();
+  const contact = findContactByLooseText(dashboard, query);
+
+  if (!contact) {
+    return {
+      sent: false,
+      reason: "לא מצאתי איש קשר בשם הזה.",
+      contactName: query,
+      review: null,
+    };
+  }
+
+  const youths = getContactYouthFromDashboard(dashboard, contact.id);
+  const schedule = canContactNow(
+    contact,
+    dashboard.settings,
+    dashboard.policy,
+    new Date(),
+  );
+  const existingReview = dashboard.reviews.find(
+    (review) =>
+      review.contactId === contact.id &&
+      review.type === "outbound_message" &&
+      review.status === "pending",
+  );
+  const review =
+    existingReview ||
+    (await createReviewItem({
+      type: "outbound_message",
+      contactId: contact.id,
+      contactName: contact.name,
+      youthId: youths[0]?.id || null,
+      youthName: youths[0]?.name || null,
+      priority: contact.status === "needs_attention" ? "high" : "normal",
+      draftMessage: composeFollowUpMessage(
+        contact,
+        youths,
+        dashboard.settings,
+        dashboard.policy,
+      ),
+      aiReason:
+        "המנהל ביקש להתחיל שיחה ידנית. ההודעה לא נספרת כחלק מהמכסה היומית האוטומטית.",
+      scheduledFor: new Date().toISOString(),
+    }));
+
+  if (!schedule.allowed) {
+    return {
+      sent: false,
+      reason: schedule.reason,
+      contactName: contact.name,
+      review,
+    };
+  }
+
+  const sentReview = await sendReviewToContact(review, contact);
+  return {
+    sent: true,
+    reason: "נשלחה הודעת פתיחה.",
+    contactName: contact.name,
+    review: sentReview,
+  };
 }
 
 export async function dispatchScheduledOutbound(now = new Date()) {
@@ -685,18 +755,48 @@ export async function handleOwnerCommand(command: string) {
     return scheduleAllPendingReviews(dashboard);
   }
 
-  if (normalized.includes("כמה") && normalized.includes("ברית")) {
+  if (
+    normalized.includes("כמה") &&
+    normalized.includes("ברית") &&
+    !includesAny(normalized, ["חודש", "שבוע"])
+  ) {
     const count = dashboard.youths.filter((youth) =>
       youth.milestones.some((milestone) => milestone.includes("ברית")),
     ).length;
     return `כרגע רשומים ${count} נערים עם עדכון ברית במערכת.`;
   }
 
-  if (normalized.includes("כמה") && normalized.includes("תפילין")) {
+  if (
+    normalized.includes("כמה") &&
+    normalized.includes("תפילין") &&
+    !includesAny(normalized, ["חודש", "שבוע"])
+  ) {
     const count = dashboard.youths.filter((youth) =>
       youth.milestones.some((milestone) => milestone.includes("תפילין")),
     ).length;
     return `כרגע רשומים ${count} נערים עם התקדמות בתפילין.`;
+  }
+
+  const youthCountForContact = normalized.match(/^כמה נערים (?:יש )?ל(.+)$/);
+  if (youthCountForContact) {
+    const contact = findContactByLooseText(dashboard, youthCountForContact[1]);
+    if (!contact) {
+      return "לא מצאתי איש קשר בשם הזה.";
+    }
+    const youths = getContactYouthFromDashboard(dashboard, contact.id);
+    return youths.length
+      ? `${contact.name} מחזיק ${youths.length} נערים במעקב: ${youths.map((youth) => youth.name).join(", ")}.`
+      : `${contact.name} עדיין בלי נערים רשומים במערכת.`;
+  }
+
+  if (includesAny(normalized, ["ברית השבוע", "ברית החודש", "עשו ברית"])) {
+    const days = normalized.includes("שבוע") ? 7 : 31;
+    return ownerMilestoneReport(dashboard, "ברית", days, "ברית");
+  }
+
+  if (includesAny(normalized, ["תפילין השבוע", "תפילין החודש", "מניח תפילין"])) {
+    const days = normalized.includes("שבוע") ? 7 : 31;
+    return ownerMilestoneReport(dashboard, "תפילין", days, "תפילין");
   }
 
   if (
@@ -745,6 +845,27 @@ export async function handleOwnerCommand(command: string) {
   ) {
     const created = await createDailyReviewQueue();
     return `פתחתי ${created.length} הודעות בתור ביקורת להיום.`;
+  }
+
+  const startConversationQuery = ownerCommandPayload(
+    dashboard.settings,
+    normalized,
+    "start_contact_conversation",
+    ["התחל שיחה עם", "תתחיל שיחה עם", "שלח עכשיו ל"],
+  );
+  if (startConversationQuery) {
+    const result = await startConversationWithContact(startConversationQuery);
+    if (!result.review) {
+      return result.reason;
+    }
+    if (result.sent) {
+      return `התחלתי שיחה עם ${result.contactName}.`;
+    }
+    return [
+      `יצרתי טיוטת פתיחה עבור ${result.contactName}, אבל לא שלחתי עכשיו.`,
+      `סיבה: ${result.reason}`,
+      "אפשר לשלוח אחר כך מתוך הביקורות או לנסות שוב בזמן שמותר לשלוח.",
+    ].join("\n");
   }
 
   const searchQuery = ownerCommandPayload(dashboard.settings, normalized, "search", [
@@ -959,6 +1080,35 @@ function ownerBlockedReasons(dashboard: DashboardData) {
       (review, index) =>
         `${index + 1}. ${review.contactName}: ${review.aiReason}`,
     ),
+  ].join("\n");
+}
+
+function ownerMilestoneReport(
+  dashboard: DashboardData,
+  milestoneText: string,
+  days: number,
+  label: string,
+) {
+  const since = Date.now() - days * 86400000;
+  const youths = dashboard.youths.filter((youth) => {
+    const updatedAt = youth.lastUpdateAt || youth.updatedAt || youth.createdAt;
+    return (
+      youth.milestones.some((milestone) => milestone.includes(milestoneText)) &&
+      Boolean(updatedAt) &&
+      new Date(updatedAt || 0).getTime() >= since
+    );
+  });
+
+  if (!youths.length) {
+    return `לא מצאתי עדכוני ${label} ב-${days === 7 ? "שבוע" : "חודש"} האחרון.`;
+  }
+
+  return [
+    `עדכוני ${label} ב-${days === 7 ? "שבוע" : "חודש"} האחרון: ${youths.length}`,
+    ...youths.map((youth, index) => {
+      const contact = dashboard.contacts.find((item) => item.id === youth.contactId);
+      return `${index + 1}. ${youth.name}${contact ? ` אצל ${contact.name}` : ""}`;
+    }),
   ].join("\n");
 }
 

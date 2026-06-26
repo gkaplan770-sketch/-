@@ -94,6 +94,9 @@ function memoryStore() {
   store.settings.sendWindowEnd ||= seedSettings.sendWindowEnd;
   store.settings.sendIntervalMinutes ||= seedSettings.sendIntervalMinutes;
   store.settings.dailyCronTime ||= seedSettings.dailyCronTime;
+  store.settings.projectName ||= seedSettings.projectName;
+  store.settings.managerDisplayName ||= seedSettings.managerDisplayName;
+  store.settings.followupQuestionGuide ||= seedSettings.followupQuestionGuide;
   store.settings.ownerCommandRoutes = mergeOwnerCommandRoutes(
     store.settings.ownerCommandRoutes,
   );
@@ -427,6 +430,9 @@ export async function setBotEnabled(isEnabled: boolean) {
       send_window_end: currentSettings.sendWindowEnd,
       send_interval_minutes: currentSettings.sendIntervalMinutes,
       daily_cron_time: currentSettings.dailyCronTime,
+      project_name: currentSettings.projectName,
+      manager_display_name: currentSettings.managerDisplayName,
+      followup_question_guide: currentSettings.followupQuestionGuide,
       owner_whatsapp: currentSettings.ownerWhatsapp,
       tone: currentSettings.tone,
       quiet_hours_start: currentSettings.quietHoursStart,
@@ -456,6 +462,11 @@ export async function updateBotSettings(input: BotSettings) {
     sendWindowEnd: normalizeTime(input.sendWindowEnd, seedSettings.sendWindowEnd),
     sendIntervalMinutes: clamp(input.sendIntervalMinutes, 30, 240),
     dailyCronTime: normalizeTime(input.dailyCronTime, seedSettings.dailyCronTime),
+    projectName: input.projectName?.trim() || seedSettings.projectName,
+    managerDisplayName:
+      input.managerDisplayName?.trim() || seedSettings.managerDisplayName,
+    followupQuestionGuide:
+      input.followupQuestionGuide?.trim() || seedSettings.followupQuestionGuide,
     ownerCommandRoutes: mergeOwnerCommandRoutes(input.ownerCommandRoutes),
     updatedAt,
   };
@@ -476,6 +487,9 @@ export async function updateBotSettings(input: BotSettings) {
       send_window_end: settings.sendWindowEnd,
       send_interval_minutes: settings.sendIntervalMinutes,
       daily_cron_time: settings.dailyCronTime,
+      project_name: settings.projectName,
+      manager_display_name: settings.managerDisplayName,
+      followup_question_guide: settings.followupQuestionGuide,
       owner_whatsapp: settings.ownerWhatsapp,
       tone: settings.tone,
       quiet_hours_start: settings.quietHoursStart,
@@ -1521,7 +1535,7 @@ function mapSettings(row: Record<string, unknown> | null): BotSettings {
     automationLevel:
       (row.automation_level as BotSettings["automationLevel"]) ||
       "auto_with_review",
-    dailyContactLimit: Number(row.daily_contact_limit || 2),
+    dailyContactLimit: Number(row.daily_contact_limit || 1),
     maxYouthsPerMessage: Number(row.max_youths_per_message || 2),
     noResponseFollowupDays: Number(row.no_response_followup_days || 4),
     staleYouthDays: Number(row.stale_youth_days || 30),
@@ -1531,6 +1545,13 @@ function mapSettings(row: Record<string, unknown> | null): BotSettings {
       row.send_interval_minutes || seedSettings.sendIntervalMinutes,
     ),
     dailyCronTime: String(row.daily_cron_time || seedSettings.dailyCronTime),
+    projectName: String(row.project_name || seedSettings.projectName),
+    managerDisplayName: String(
+      row.manager_display_name || seedSettings.managerDisplayName,
+    ),
+    followupQuestionGuide: String(
+      row.followup_question_guide || seedSettings.followupQuestionGuide,
+    ),
     ownerWhatsapp: String(row.owner_whatsapp || ""),
     tone: String(row.tone || seedSettings.tone),
     quietHoursStart: String(row.quiet_hours_start || "21:30"),
